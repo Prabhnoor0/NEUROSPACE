@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_service_description">NeuroSpace reads text from your screen to help you summarize, simplify, and listen to content in any app. This accessibility service enables the floating bubble to understand what\'s on your screen without you having to copy text.</string>
+</resources>

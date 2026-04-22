@@ -1,0 +1,74 @@
+name: neurospace
+description: "NeuroSpace — Adaptive learning for neurodivergent minds. Powered by Google AI."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Icons
+  cupertino_icons: ^1.0.8
+
+  # State Management
+  provider: ^6.1.2
+
+  # HTTP & Networking
+  http: ^1.2.2
+
+  # Google Fonts (OpenDyslexic, Lexend, Inter)
+  google_fonts: ^6.2.1
+
+  # Markdown Rendering (for AI lesson content)
+  flutter_markdown: ^0.7.6
+
+  # Audio Player (TTS playback, white noise)
+  audioplayers: ^6.1.0
+
+  # WebView (for Mermaid.js diagram rendering)
+  webview_flutter: ^4.10.0
+
+  # Camera & Image Picker (Snap-to-Understand)
+  image_picker: ^1.1.2
+
+  # Animations
+  flutter_animate: ^4.5.2
+  lottie: ^3.3.1
+
+  # Flip Card (Flashcard quizzes)
+  flip_card: ^0.7.0
+
+  # Local Storage
+  shared_preferences: ^2.3.4
+
+  # UUID for user identification
+  uuid: ^4.5.1
+  flutter_overlay_window: ^0.5.0
+  path_provider: ^2.1.4
+
+  # Firebase (free tier — Realtime Database + Anonymous Auth)
+  firebase_core: ^3.9.0
+  firebase_auth: ^5.4.2
+  firebase_database: ^11.3.1
+
+  # Maps (OpenStreetMap — no API key needed)
+  flutter_map: ^6.1.0
+  latlong2: ^0.9.1
+  geolocator: ^13.0.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/
+    - assets/audio/
+    - assets/lottie/

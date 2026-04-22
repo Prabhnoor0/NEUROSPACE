@@ -1,0 +1,8 @@
+# NeuroSpace Backend
+.env
+service-account-key.json
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store

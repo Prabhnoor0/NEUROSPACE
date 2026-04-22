@@ -1,0 +1,25 @@
+# NeuroSpace Backend Dependencies
+
+# FastAPI & Server
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+python-dotenv==1.0.1
+
+# Google Gemini AI (google-generativeai — NO Vertex AI needed)
+google-generativeai>=0.8.4
+
+# Google GenAI SDK (for Gemini 3.1 Flash TTS — free)
+google-genai>=1.0.0
+
+# Groq (LLM inference for auxiliary tasks)
+groq>=0.4.0
+
+# Cloudinary (media storage — TTS audio, generated images)
+cloudinary>=1.36.0
+
+# Pydantic for data validation
+pydantic==2.10.4
+
+# HTTP client
+httpx==0.28.1
