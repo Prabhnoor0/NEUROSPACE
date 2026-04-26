@@ -22,6 +22,7 @@ from .llm_core import (
     invoke_gemini_json,
     invoke_gemini_with_fallback,
     invoke_gemini_with_image,
+    invoke_groq_json,
 )
 
 from prompts.adhd_prompt import ADHD_SYSTEM_PROMPT, ADHD_TOPIC_TEMPLATE
@@ -60,16 +61,7 @@ async def generate_lesson(
     visuals_needed: bool = True,
 ) -> dict:
     """
-    Generate an adaptive lesson using Gemini with auto-fallback.
-
-    Args:
-        topic: The topic to teach
-        profile: "ADHD", "Dyslexia", or "Autism"
-        energy_level: "High", "Medium", or "Low"
-        visuals_needed: Whether to include image generation prompts
-
-    Returns:
-        Structured lesson dict with modules
+    Generate an adaptive lesson. Tries Gemini first, falls back to Groq.
     """
     prompt_config = PROFILE_PROMPTS.get(profile, PROFILE_PROMPTS["ADHD"])
     system_prompt = prompt_config["system"]
@@ -81,22 +73,75 @@ async def generate_lesson(
 
     full_prompt = f"{system_prompt}\n\n{topic_prompt}"
 
-    lesson_data = invoke_gemini_json(
-        prompt=full_prompt,
-        task_name="lesson_generation",
-        temperature=0.7,
-    )
-
-    if lesson_data and "title" in lesson_data and "modules" in lesson_data:
-        logger.info(
-            f"Generated lesson: '{lesson_data.get('title')}' "
-            f"with {len(lesson_data.get('modules', []))} modules "
-            f"for profile={profile}"
+    # ---- Attempt 1: Gemini ----
+    try:
+        lesson_data = invoke_gemini_json(
+            prompt=full_prompt,
+            task_name="lesson_generation",
+            temperature=0.7,
         )
-        return lesson_data
 
-    # Retry with stricter prompt
-    return await _retry_with_strict_prompt(topic, profile, energy_level)
+        if lesson_data and "title" in lesson_data and "modules" in lesson_data:
+            logger.info(
+                f"Generated lesson: '{lesson_data.get('title')}' "
+                f"with {len(lesson_data.get('modules', []))} modules "
+                f"for profile={profile} (via Gemini)"
+            )
+            return lesson_data
+        else:
+            logger.warning("Gemini returned incomplete/empty data.")
+    except Exception as e:
+        logger.warning(f"Gemini failed with error: {e}")
+
+    # ---- Attempt 2: Groq fallback (auto-rotates through 4 models) ----
+    logger.info("⚡ Falling back to Groq for lesson generation...")
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": topic_prompt},
+    ]
+
+    try:
+        groq_data = invoke_groq_json(
+            messages=messages,
+            task_name="lesson_generation_groq",
+            temperature=0.7,
+        )
+
+        if groq_data and "title" in groq_data and "modules" in groq_data:
+            logger.info(f"✅ Generated lesson via Groq for: {topic}")
+            return groq_data
+        else:
+            logger.warning("Groq returned incomplete data, trying strict prompt...")
+    except Exception as e:
+        logger.warning(f"Groq first attempt failed: {e}")
+
+    # ---- Attempt 3: Groq with stricter prompt ----
+    strict_messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": topic_prompt + (
+            "\n\nIMPORTANT: Return ONLY a raw JSON object. No markdown. No explanation. "
+            "Start with { and end with }. The JSON must have 'title', 'summary', "
+            "'modules' (array), and 'tts_text' fields."
+        )},
+    ]
+
+    try:
+        groq_strict = invoke_groq_json(
+            messages=strict_messages,
+            task_name="lesson_generation_groq_strict",
+            temperature=0.5,
+        )
+
+        if groq_strict and "title" in groq_strict:
+            logger.info(f"✅ Generated lesson via Groq (strict) for: {topic}")
+            return groq_strict
+    except Exception as e:
+        logger.warning(f"Groq strict attempt also failed: {e}")
+
+    # ---- All attempts failed — return minimal fallback ----
+    logger.error(f"ALL lesson generation attempts failed for topic: {topic}")
+    return _fallback_lesson(topic)
 
 
 async def _retry_with_strict_prompt(
@@ -128,7 +173,27 @@ async def _retry_with_strict_prompt(
     if lesson_data and "title" in lesson_data:
         return lesson_data
 
+    # Also retry Groq if Gemini strict retry failed
+    logger.warning("Gemini strict retry failed. Falling back to Groq strict retry...")
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": topic_prompt}
+    ]
+    groq_data = invoke_groq_json(
+        messages=messages,
+        task_name="lesson_generation_groq_retry",
+        temperature=0.5,
+    )
+    
+    if groq_data and "title" in groq_data:
+        return groq_data
+
     # Return a minimal fallback lesson
+    return _fallback_lesson(topic)
+
+
+def _fallback_lesson(topic: str) -> dict:
+    """Return a minimal fallback lesson when all AI models fail."""
     return {
         "title": f"Lesson: {topic}",
         "summary": f"An overview of {topic}.",

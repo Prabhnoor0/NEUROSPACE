@@ -62,17 +62,9 @@ class ModelPool:
             logger.debug(f"[ModelPool:{self.pool_name}] '{model}' in cooldown until {cooldown_until}")
             self.current_index = (self.current_index + 1) % len(self.models)
 
-        # All models in cooldown — find the one that expires soonest
-        soonest_model = min(self.cooldowns, key=self.cooldowns.get)
-        wait_seconds = (self.cooldowns[soonest_model] - now).total_seconds()
-        logger.warning(
-            f"[ModelPool:{self.pool_name}] ALL models in cooldown! "
-            f"Waiting {wait_seconds:.0f}s for '{soonest_model}'"
-        )
-        time.sleep(max(0, wait_seconds) + 1)
-        del self.cooldowns[soonest_model]
-        self.current_index = self.models.index(soonest_model)
-        return soonest_model
+        # All models in cooldown — fail instantly to trigger fallback
+        logger.warning(f"[ModelPool:{self.pool_name}] ALL models in cooldown! Exhausted.")
+        raise RuntimeError(f"All models in {self.pool_name} pool are currently rate-limited.")
 
     def mark_rate_limited(self, model: str):
         """Mark a model as rate-limited. Pool rotates to the next model."""
@@ -146,8 +138,8 @@ groq_audio_pool = ModelPool(
 gemini_pool = ModelPool(
     "gemini",
     _parse_models("GEMINI_MODELS", [
-        os.getenv("GEMINI_FLASH_MODEL", "gemini-2.0-flash"),
-        os.getenv("GEMINI_PRO_MODEL", "gemini-1.5-pro"),
+        os.getenv("GEMINI_FLASH_MODEL", "gemini-2.5-flash"),
+        os.getenv("GEMINI_PRO_MODEL", "gemini-2.5-pro"),
     ]),
     cooldown_seconds=60,
 )
@@ -339,11 +331,15 @@ def invoke_gemini_with_fallback(
     import google.generativeai as genai
 
     # Ensure configured
-    get_gemini_model()  # triggers configuration
+    try:
+        get_gemini_model()  # triggers configuration
+    except Exception as e:
+        logger.error(f"[{task_name}] Gemini configuration failed: {e}")
+        return None
 
     for attempt in range(max_retries):
-        model_name = gemini_pool.get_current_model()
         try:
+            model_name = gemini_pool.get_current_model()
             model = genai.GenerativeModel(
                 model_name=model_name,
                 generation_config=genai.GenerationConfig(
@@ -358,13 +354,21 @@ def invoke_gemini_with_fallback(
             logger.info(f"[{task_name}] ✅ Success with Gemini '{model_name}' (attempt {attempt+1})")
             return result
 
+        except RuntimeError as e:
+            # Pool exhausted — all models rate-limited
+            logger.warning(f"[{task_name}] Gemini pool exhausted: {e}")
+            return None
         except Exception as e:
+            model_name = getattr(e, '_model_name', 'unknown')
             if _is_rate_limit_error(e):
-                logger.warning(f"[{task_name}] 429 on Gemini '{model_name}' — rotating...")
-                gemini_pool.mark_rate_limited(model_name)
+                logger.warning(f"[{task_name}] 429 on Gemini — rotating...")
+                try:
+                    gemini_pool.mark_rate_limited(gemini_pool.models[gemini_pool.current_index])
+                except Exception:
+                    pass
                 continue
             else:
-                logger.error(f"[{task_name}] Gemini error on '{model_name}': {e}")
+                logger.error(f"[{task_name}] Gemini error: {e}")
                 if attempt < max_retries - 1:
                     time.sleep(1)
                     continue
