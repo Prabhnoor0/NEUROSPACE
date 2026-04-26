@@ -24,9 +24,14 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // Initialize Firebase with generated config
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+  } catch (e) {
+    // App already initialized (e.g. iOS auto-init from GoogleService-Info.plist)
+    if (Firebase.apps.isEmpty) rethrow;
+  }
 
   // Sign in anonymously (creates a persistent user ID)
   await FirebaseService.ensureAuthenticated();

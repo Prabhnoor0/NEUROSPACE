@@ -1,13 +1,19 @@
 /// NeuroSpace — API Service
 /// Handles all HTTP communication with the FastAPI backend.
-
+import 'package:flutter/foundation.dart';
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'package:http/http.dart' as http;
 
 class ApiService {
-  // For Android emulator use 10.0.2.2, for iOS simulator use localhost
-  // For physical device, use your machine's local IP
-  static const String _baseUrl = 'http://10.0.2.2:8080';
+  // Android emulator uses 10.0.2.2 to reach host; iOS simulator uses localhost
+  static String get _baseUrl {
+    if (Platform.isAndroid) {
+      return 'http://10.0.2.2:8000';
+    } else {
+      return 'http://localhost:8000';
+    }
+  }
 
   static String get baseUrl => _baseUrl;
 
