@@ -85,12 +85,15 @@ async def model_status():
 # Router Registration
 # ============================================
 
-from routers import lessons, simplify, tts, image, theme
+from routers import lessons, simplify, tts, image, theme, maps, scan, search
 app.include_router(lessons.router, prefix="/api", tags=["Lessons"])
 app.include_router(simplify.router, prefix="/api", tags=["Simplify"])
 app.include_router(tts.router, prefix="/api", tags=["Text-to-Speech"])
 app.include_router(image.router, prefix="/api", tags=["Image Generation"])
 app.include_router(theme.router, prefix="/api", tags=["Theme Generation"])
+app.include_router(maps.router, prefix="/api", tags=["Maps"])
+app.include_router(scan.router, prefix="/api", tags=["Image Scan & Simplify"])
+app.include_router(search.router, prefix="/api", tags=["Search"])
 
 
 # ============================================

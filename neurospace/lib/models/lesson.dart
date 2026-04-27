@@ -1,5 +1,7 @@
 /// NeuroSpace — Lesson Models
 /// Defines the structured JSON syllabus that the backend AI generates.
+/// Extended with unified schema: key_points, wikipedia_links, interactive MCQ,
+/// accessibility (simplified_text + audio_script).
 
 class LessonModule {
   final String title;
@@ -32,7 +34,7 @@ class LessonModule {
 class ModuleSection {
   final String heading;
   final String text;
-  final String type; // 'definition', 'example', 'analogy', 'literal_fact'
+  final String type; // 'definition', 'example', 'analogy', 'literal_fact', 'explanation', 'summary'
   final String? imageUrl;
   final String? mermaidDiagram;
 
@@ -72,25 +74,118 @@ class Flashcard {
   }
 }
 
+/// MCQ Quiz question with multiple-choice options
+class QuizQuestion {
+  final String question;
+  final List<String> options;
+  final String answer;
+
+  QuizQuestion({
+    required this.question,
+    required this.options,
+    required this.answer,
+  });
+
+  factory QuizQuestion.fromJson(Map<String, dynamic> json) {
+    return QuizQuestion(
+      question: json['question'] ?? '',
+      options: (json['options'] as List?)?.map((e) => e.toString()).toList() ?? [],
+      answer: json['answer'] ?? '',
+    );
+  }
+}
+
+/// Wikipedia link reference
+class WikiLink {
+  final String title;
+  final String url;
+
+  WikiLink({required this.title, required this.url});
+
+  factory WikiLink.fromJson(Map<String, dynamic> json) {
+    return WikiLink(
+      title: json['title'] ?? '',
+      url: json['url'] ?? '',
+    );
+  }
+}
+
+/// Accessibility data from the LLM
+class LessonAccessibility {
+  final String simplifiedText;
+  final String audioScript;
+
+  LessonAccessibility({
+    required this.simplifiedText,
+    required this.audioScript,
+  });
+
+  factory LessonAccessibility.fromJson(Map<String, dynamic> json) {
+    return LessonAccessibility(
+      simplifiedText: json['simplified_text'] ?? '',
+      audioScript: json['audio_script'] ?? '',
+    );
+  }
+}
+
 class DeepDiveLesson {
   final String topic;
   final String targetProfile;
   final List<LessonModule> modules;
 
+  // New unified schema fields
+  final List<String> keyPoints;
+  final List<WikiLink> wikipediaLinks;
+  final List<QuizQuestion> quizQuestions;
+  final List<String> thinkingQuestions;
+  final LessonAccessibility? accessibility;
+  final String? ttsText;
+
   DeepDiveLesson({
     required this.topic,
     required this.targetProfile,
     required this.modules,
+    this.keyPoints = const [],
+    this.wikipediaLinks = const [],
+    this.quizQuestions = const [],
+    this.thinkingQuestions = const [],
+    this.accessibility,
+    this.ttsText,
   });
 
   factory DeepDiveLesson.fromJson(Map<String, dynamic> json) {
+    // Parse interactive section
+    final interactive = json['interactive'] as Map<String, dynamic>?;
+    final quizList = (interactive?['quiz'] as List?)
+            ?.map((e) => QuizQuestion.fromJson(e))
+            .toList() ??
+        [];
+    final questionsList = (interactive?['questions'] as List?)
+            ?.map((e) => e.toString())
+            .toList() ??
+        [];
+
     return DeepDiveLesson(
-      topic: json['topic'] ?? '',
+      topic: json['topic'] ?? json['title'] ?? '',
       targetProfile: json['target_profile'] ?? 'custom',
       modules: (json['modules'] as List?)
               ?.map((e) => LessonModule.fromJson(e))
               .toList() ??
           [],
+      keyPoints: (json['key_points'] as List?)
+              ?.map((e) => e.toString())
+              .toList() ??
+          [],
+      wikipediaLinks: (json['wikipedia_links'] as List?)
+              ?.map((e) => WikiLink.fromJson(e))
+              .toList() ??
+          [],
+      quizQuestions: quizList,
+      thinkingQuestions: questionsList,
+      accessibility: json['accessibility'] != null
+          ? LessonAccessibility.fromJson(json['accessibility'])
+          : null,
+      ttsText: json['tts_text'],
     );
   }
 }
@@ -101,10 +196,29 @@ class DeepDiveLesson {
 
 class MockLessonGenerator {
   static DeepDiveLesson getMockLesson(String profileType) {
-    // Generate a different mock lesson layout depending on the exact profile asked for
     return DeepDiveLesson(
       topic: 'How Wi-Fi Works',
       targetProfile: profileType,
+      keyPoints: [
+        'Wi-Fi uses radio waves to transmit data wirelessly',
+        'A router connects your devices to the internet',
+        'Wi-Fi operates on 2.4GHz and 5GHz frequencies',
+      ],
+      wikipediaLinks: [
+        WikiLink(title: 'Wi-Fi', url: 'https://en.wikipedia.org/wiki/Wi-Fi'),
+      ],
+      quizQuestions: [
+        QuizQuestion(
+          question: 'What type of waves does Wi-Fi use?',
+          options: ['Sound waves', 'Radio waves', 'Light waves', 'Micro waves'],
+          answer: 'Radio waves',
+        ),
+      ],
+      thinkingQuestions: ['Why does Wi-Fi signal get weaker through walls?'],
+      accessibility: LessonAccessibility(
+        simplifiedText: 'Wi-Fi lets your phone connect to the internet without a cable. A router sends radio waves that carry data to your devices.',
+        audioScript: 'Let me explain how Wi-Fi works. Wi-Fi is a way to connect to the internet without any wires. Your router, that box plugged into the wall, sends out radio waves. Your phone picks up those waves and turns them into the websites and videos you see.',
+      ),
       modules: [
         LessonModule(
           title: 'The Invisible Cable',
@@ -130,7 +244,7 @@ class MockLessonGenerator {
                   question: 'What type of waves does Wi-Fi use?',
                   answer: 'Radio Waves! 📻',
                 )
-              : null, // Flashcards mainly used for ADHD dopamine
+              : null,
         ),
         LessonModule(
           title: 'The Router (The Boss)',

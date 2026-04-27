@@ -1,14 +1,15 @@
 /// NeuroSpace — Universal Lesson Screen
 /// Morphs its entire structural layout depending on the active NeuroProfile.
+/// Extended with: key_points, wikipedia_links, MCQ quiz, accessibility
+/// (simplified_text toggle + audio_script TTS), and improved per-profile UI.
 
-import 'dart:io';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flip_card/flip_card.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../providers/neuro_theme_provider.dart';
 import '../models/neuro_profile.dart';
 import '../models/lesson.dart';
@@ -31,7 +32,11 @@ class _LessonScreenState extends State<LessonScreen> {
   bool _isLoading = true;
   String? _errorMessage;
   bool _isPlayingTts = false;
+  bool _showSimplified = false;
   final FlutterTts _flutterTts = FlutterTts();
+
+  // Track selected MCQ answers: quizIndex -> selectedOption
+  final Map<int, String> _selectedAnswers = {};
 
   @override
   void initState() {
@@ -60,7 +65,6 @@ class _LessonScreenState extends State<LessonScreen> {
     final profile = themeProvider.activeProfile;
     final energyLevel = themeProvider.energyLevel;
 
-    // Map profile type to backend enum value
     String profileStr;
     switch (profile.profileType) {
       case NeuroProfileType.adhd:
@@ -97,7 +101,6 @@ class _LessonScreenState extends State<LessonScreen> {
       );
 
       // Parse backend response into DeepDiveLesson
-      // Backend returns modules with type/content fields; map to our model
       final backendModules = response['modules'] as List? ?? [];
       final lessonModules = <LessonModule>[];
 
@@ -105,7 +108,6 @@ class _LessonScreenState extends State<LessonScreen> {
         final modMap = Map<String, dynamic>.from(mod);
         final modType = modMap['type'] ?? 'text_block';
 
-        // Build sections from the backend module
         final sections = <ModuleSection>[];
 
         if (modType == 'text_block') {
@@ -127,16 +129,16 @@ class _LessonScreenState extends State<LessonScreen> {
             type: 'graph',
             mermaidDiagram: modMap['mermaid_code'],
           ));
-        } else if (modType == 'image') {
+        } else if (modType == 'image' || modType == 'image_prompt') {
           sections.add(ModuleSection(
-            heading: modMap['alt_text'] ?? 'Image',
-            text: modMap['caption'] ?? '',
+            heading: modMap['alt_text'] ?? modMap['description'] ?? 'Image',
+            text: modMap['caption'] ?? modMap['description'] ?? '',
             type: 'image',
             imageUrl: modMap['image_url'] ?? modMap['image_base64'],
           ));
         } else if (modType == 'deep_dive') {
           sections.add(ModuleSection(
-            heading: 'Deep Dive',
+            heading: modMap['topic'] ?? 'Deep Dive',
             text: modMap['preview'] ?? 'Tap to explore more',
             type: 'deep_dive',
           ));
@@ -144,7 +146,7 @@ class _LessonScreenState extends State<LessonScreen> {
           sections.add(ModuleSection(
             heading: 'Quiz',
             text: modMap['question'] ?? '',
-            type: 'example',
+            type: 'quiz',
           ));
         } else {
           sections.add(ModuleSection(
@@ -166,9 +168,7 @@ class _LessonScreenState extends State<LessonScreen> {
         if (modMap['topic'] != null) {
           inferredTitle = modMap['topic'];
         } else if (modMap['caption'] != null && modMap['caption'].toString().isNotEmpty) {
-          // Sometimes caption is a good title for graphs/images
           final cap = modMap['caption'].toString();
-          // Title shouldn't be too long, if caption is long, use generic
           inferredTitle = cap.length > 30 ? 'Visualization' : cap;
         } else if (modType == 'text_block') {
           final st = (modMap['section_type'] ?? '').toString();
@@ -180,7 +180,7 @@ class _LessonScreenState extends State<LessonScreen> {
         } else if (modType == 'image' || modType == 'image_prompt') {
           inferredTitle = 'Illustration';
         } else if (modType == 'deep_dive') {
-          inferredTitle = 'Deep Dive';
+          inferredTitle = modMap['topic'] ?? 'Deep Dive';
         } else if (modType == 'interactive_quiz') {
           inferredTitle = 'Quiz Checkpoint';
         } else {
@@ -196,7 +196,6 @@ class _LessonScreenState extends State<LessonScreen> {
         ));
       }
 
-      // If backend returned flat modules, group them into logical chunks
       if (mounted) {
         setState(() {
           _lesson = DeepDiveLesson(
@@ -217,6 +216,27 @@ class _LessonScreenState extends State<LessonScreen> {
                       ],
                     ),
                   ],
+            keyPoints: (response['key_points'] as List?)
+                    ?.map((e) => e.toString())
+                    .toList() ??
+                [],
+            wikipediaLinks: (response['wikipedia_links'] as List?)
+                    ?.map((e) => WikiLink.fromJson(Map<String, dynamic>.from(e)))
+                    .toList() ??
+                [],
+            quizQuestions: ((response['interactive'] as Map<String, dynamic>?)?['quiz'] as List?)
+                    ?.map((e) => QuizQuestion.fromJson(Map<String, dynamic>.from(e)))
+                    .toList() ??
+                [],
+            thinkingQuestions: ((response['interactive'] as Map<String, dynamic>?)?['questions'] as List?)
+                    ?.map((e) => e.toString())
+                    .toList() ??
+                [],
+            accessibility: response['accessibility'] != null
+                ? LessonAccessibility.fromJson(
+                    Map<String, dynamic>.from(response['accessibility']))
+                : null,
+            ttsText: response['tts_text'],
           );
           _isLoading = false;
         });
@@ -231,37 +251,43 @@ class _LessonScreenState extends State<LessonScreen> {
     }
   }
 
-  /// Play TTS for the entire lesson
+  /// Play TTS — prefers audio_script from accessibility, fallback to full text
   Future<void> _playTts(NeuroProfile profile) async {
     if (_lesson == null) return;
 
-    // Gather all text from the lesson
-    final buffer = StringBuffer();
-    for (final module in _lesson!.modules) {
-      buffer.writeln(module.title);
-      buffer.writeln(module.description);
-      for (final section in module.sections) {
-        if (section.type != 'graph' && section.type != 'image') {
-          buffer.writeln(section.text);
+    // Prefer the accessibility audio_script if available
+    String textToSpeak = '';
+    if (_lesson!.accessibility != null &&
+        _lesson!.accessibility!.audioScript.isNotEmpty) {
+      textToSpeak = _lesson!.accessibility!.audioScript;
+    } else if (_lesson!.ttsText != null && _lesson!.ttsText!.isNotEmpty) {
+      textToSpeak = _lesson!.ttsText!;
+    } else {
+      final buffer = StringBuffer();
+      for (final module in _lesson!.modules) {
+        buffer.writeln(module.title);
+        for (final section in module.sections) {
+          if (section.type != 'graph' && section.type != 'image') {
+            buffer.writeln(section.text);
+          }
         }
       }
+      textToSpeak = buffer.toString().trim();
     }
-    final fullText = buffer.toString().trim();
-    if (fullText.isEmpty) return;
+    if (textToSpeak.isEmpty) return;
 
     setState(() => _isPlayingTts = true);
 
     try {
-      await _flutterTts.setSpeechRate(profile.ttsSpeed * 0.5); // Normalize speed for local TTS engine
+      await _flutterTts.setSpeechRate(profile.ttsSpeed * 0.5);
       if (profile.profileType == NeuroProfileType.dyslexia) {
-        await _flutterTts.setPitch(0.9); // Deep, calm voice for Dyslexia
+        await _flutterTts.setPitch(0.9);
       } else if (profile.profileType == NeuroProfileType.adhd) {
-        await _flutterTts.setPitch(1.3); // High energy curve
+        await _flutterTts.setPitch(1.3);
       } else {
-        await _flutterTts.setPitch(1.0); // Neutral soothing
+        await _flutterTts.setPitch(1.0);
       }
-
-      await _flutterTts.speak(fullText);
+      await _flutterTts.speak(textToSpeak);
     } catch (e) {
       if (mounted) {
         setState(() => _isPlayingTts = false);
@@ -288,7 +314,6 @@ class _LessonScreenState extends State<LessonScreen> {
     if (userId == null) return;
 
     try {
-      // Convert lesson modules to serializable maps
       final moduleMaps = _lesson!.modules.map((m) => {
         'title': m.title,
         'description': m.description,
@@ -343,7 +368,11 @@ class _LessonScreenState extends State<LessonScreen> {
     return Scaffold(
       backgroundColor: profile.backgroundColor,
       appBar: AppBar(
-        title: Text(widget.topic),
+        title: Text(
+          widget.topic,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
         titleTextStyle: TextStyle(
           fontFamily: profile.fontFamily,
           fontSize: profile.fontSize,
@@ -354,7 +383,18 @@ class _LessonScreenState extends State<LessonScreen> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         actions: [
-          // Save to Library button
+          // Simplify toggle
+          if (_lesson?.accessibility != null &&
+              _lesson!.accessibility!.simplifiedText.isNotEmpty)
+            IconButton(
+              icon: Icon(
+                _showSimplified ? Icons.visibility_off_rounded : Icons.visibility_rounded,
+                color: _showSimplified ? profile.accentColor : profile.textColor.withValues(alpha: 0.5),
+              ),
+              tooltip: _showSimplified ? 'Show full lesson' : 'Simplify',
+              onPressed: () => setState(() => _showSimplified = !_showSimplified),
+            ),
+          // Save to Library
           IconButton(
             icon: Icon(
               _isSaved ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
@@ -362,6 +402,7 @@ class _LessonScreenState extends State<LessonScreen> {
             ),
             onPressed: _isSaved ? null : () => _saveLesson(profile),
           ),
+          // TTS
           IconButton(
             icon: _isPlayingTts
                 ? SizedBox(
@@ -383,235 +424,487 @@ class _LessonScreenState extends State<LessonScreen> {
         ],
       ),
       body: _isLoading
-          ? Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  CircularProgressIndicator(color: profile.accentColor),
-                  const SizedBox(height: 16),
-                  Text(
-                    'Generating lesson on "${widget.topic}"...',
-                    style: TextStyle(
-                      fontFamily: profile.fontFamily,
-                      color: profile.textColor.withValues(alpha: 0.6),
-                    ),
-                  ),
-                ],
-              ),
-            )
+          ? _buildLoadingState(profile)
           : _errorMessage != null
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(32),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.error_outline_rounded,
-                            color: profile.accentColor, size: 48),
-                        const SizedBox(height: 16),
-                        Text(
-                          'Failed to generate lesson',
-                          style: TextStyle(
-                            fontFamily: profile.fontFamily,
-                            fontSize: 18,
-                            fontWeight: FontWeight.w700,
-                            color: profile.textColor,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          _errorMessage!,
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontFamily: profile.fontFamily,
-                            fontSize: 13,
-                            color: profile.textColor.withValues(alpha: 0.5),
-                          ),
-                        ),
-                        const SizedBox(height: 24),
-                        ElevatedButton.icon(
-                          onPressed: () {
-                            setState(() {
-                              _isLoading = true;
-                              _errorMessage = null;
-                            });
-                            _generateLesson();
-                          },
-                          icon: const Icon(Icons.refresh_rounded),
-                          label: const Text('Retry'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: profile.accentColor,
-                            foregroundColor: Colors.white,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                )
-              : _buildAdaptiveLayout(profile),
+              ? _buildErrorState(profile)
+              : _showSimplified
+                  ? _buildSimplifiedView(profile)
+                  : _buildFullLessonView(profile),
     );
   }
 
   // ===========================================
-  // LAYOUT ENGINE: Morphs based on Profile
+  // LOADING & ERROR
   // ===========================================
 
-  Widget _buildAdaptiveLayout(NeuroProfile profile) {
-    // 1. ADHD Layout -> TikTok swipe cards + Flashcards
-    if (profile.profileType == NeuroProfileType.adhd) {
-      return PageView.builder(
-        controller: _pageController,
-        scrollDirection: Axis.vertical,
-        physics: const BouncingScrollPhysics(),
-        itemCount: _lesson!.modules.length * 2, // module + flashcard
-        itemBuilder: (context, index) {
-          final moduleIndex = index ~/ 2;
-          final isFlashcard = index % 2 != 0;
+  Widget _buildLoadingState(NeuroProfile profile) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          CircularProgressIndicator(color: profile.accentColor),
+          const SizedBox(height: 16),
+          Text(
+            'Generating lesson on "${widget.topic}"...',
+            style: TextStyle(
+              fontFamily: profile.fontFamily,
+              color: profile.textColor.withValues(alpha: 0.6),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
-          if (isFlashcard) {
-            final card = _lesson!.modules[moduleIndex].flashcard;
-            if (card == null) return const SizedBox.shrink();
-            return _buildFlashcard(card, profile);
-          } else {
-            return _buildAdhdModuleCard(
-                _lesson!.modules[moduleIndex], profile, moduleIndex);
-          }
-        },
-      );
-    }
-    // 2. Dyslexia Layout -> Continuous scroll, high spacing, warm distinct colors
-    else if (profile.profileType == NeuroProfileType.dyslexia) {
-      return ListView.builder(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
-        itemCount: _lesson!.modules.length,
-        itemBuilder: (context, index) {
-          return Padding(
-            padding: const EdgeInsets.only(bottom: 32),
-            child: _buildDyslexiaModuleCard(_lesson!.modules[index], profile),
-          );
-        },
-      );
-    }
-    // 3. Autism Layout -> Accordion, deeply structured, literal descriptions
-    else {
-      return ListView.builder(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-        itemCount: _lesson!.modules.length,
-        itemBuilder: (context, index) {
-          return Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: _buildAutismAccordion(_lesson!.modules[index], profile),
-          );
-        },
-      );
-    }
+  Widget _buildErrorState(NeuroProfile profile) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.error_outline_rounded,
+                color: profile.accentColor, size: 48),
+            const SizedBox(height: 16),
+            Text(
+              'Failed to generate lesson',
+              style: TextStyle(
+                fontFamily: profile.fontFamily,
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                color: profile.textColor,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _errorMessage!,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontFamily: profile.fontFamily,
+                fontSize: 13,
+                color: profile.textColor.withValues(alpha: 0.5),
+              ),
+            ),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(
+              onPressed: () {
+                setState(() {
+                  _isLoading = true;
+                  _errorMessage = null;
+                });
+                _generateLesson();
+              },
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Retry'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: profile.accentColor,
+                foregroundColor: Colors.white,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   // ===========================================
-  // ADHD: Swipeable Gamified Cards
+  // SIMPLIFIED VIEW (Accessibility)
   // ===========================================
 
-  Widget _buildAdhdModuleCard(
-      LessonModule module, NeuroProfile profile, int index) {
-    return Center(
-      child: Container(
-        margin: const EdgeInsets.all(24),
-        padding: const EdgeInsets.all(24),
-        decoration: BoxDecoration(
-          color: profile.cardColor,
-          borderRadius: BorderRadius.circular(32),
-          border: profile.focusBordersEnabled
-              ? Border.all(color: profile.accentColor.withValues(alpha: 0.3), width: 2)
-              : null,
-          boxShadow: [
-            BoxShadow(
-              color: profile.accentColor.withValues(alpha: 0.15),
-              blurRadius: 30,
-              offset: const Offset(0, 10),
-            )
+  Widget _buildSimplifiedView(NeuroProfile profile) {
+    final simplified = _lesson!.accessibility!.simplifiedText;
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: profile.accentColor.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: profile.accentColor.withValues(alpha: 0.2),
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.auto_awesome_rounded,
+                        color: profile.accentColor, size: 20),
+                    const SizedBox(width: 8),
+                    Text(
+                      'SIMPLIFIED VIEW',
+                      style: TextStyle(
+                        fontFamily: profile.fontFamily,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                        color: profile.accentColor,
+                        letterSpacing: 1.5,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  simplified,
+                  style: TextStyle(
+                    fontFamily: profile.fontFamily,
+                    fontSize: profile.fontSize + 2,
+                    color: profile.textColor,
+                    height: 1.8,
+                    letterSpacing: profile.letterSpacing,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+          // Key points
+          if (_lesson!.keyPoints.isNotEmpty) ...[
+            _buildKeyPointsSection(profile),
+            const SizedBox(height: 24),
+          ],
+          // Back button
+          Center(
+            child: TextButton.icon(
+              onPressed: () => setState(() => _showSimplified = false),
+              icon: const Icon(Icons.arrow_back_rounded),
+              label: const Text('View full lesson'),
+              style: TextButton.styleFrom(
+                foregroundColor: profile.accentColor,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ===========================================
+  // FULL LESSON VIEW — Routes to profile-specific layout
+  // ===========================================
+
+  Widget _buildFullLessonView(NeuroProfile profile) {
+    return CustomScrollView(
+      slivers: [
+        // Summary header
+        SliverToBoxAdapter(
+          child: _buildLessonHeader(profile),
+        ),
+        // Key Points
+        if (_lesson!.keyPoints.isNotEmpty)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: _buildKeyPointsSection(profile),
+            ),
+          ),
+        // Modules — profile-specific
+        SliverToBoxAdapter(
+          child: _buildAdaptiveModules(profile),
+        ),
+        // Wikipedia Links
+        if (_lesson!.wikipediaLinks.isNotEmpty)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: _buildWikipediaSection(profile),
+            ),
+          ),
+        // MCQ Quiz
+        if (_lesson!.quizQuestions.isNotEmpty)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: _buildMcqQuizSection(profile),
+            ),
+          ),
+        // Thinking Questions
+        if (_lesson!.thinkingQuestions.isNotEmpty)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: _buildThinkingQuestionsSection(profile),
+            ),
+          ),
+        // Bottom padding
+        const SliverToBoxAdapter(child: SizedBox(height: 48)),
+      ],
+    );
+  }
+
+  // ===========================================
+  // LESSON HEADER
+  // ===========================================
+
+  Widget _buildLessonHeader(NeuroProfile profile) {
+    final isAdhd = profile.profileType == NeuroProfileType.adhd;
+    final isDyslexia = profile.profileType == NeuroProfileType.dyslexia;
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+      padding: EdgeInsets.all(isAdhd ? 20 : 24),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            profile.accentColor.withValues(alpha: 0.12),
+            profile.accentColor.withValues(alpha: 0.04),
           ],
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(
-                color: profile.accentColor.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(isAdhd ? 28 : 20),
+        border: Border.all(
+          color: profile.accentColor.withValues(alpha: 0.15),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            _lesson!.topic,
+            style: TextStyle(
+              fontFamily: profile.fontFamily,
+              fontSize: isDyslexia ? profile.fontSize + 4 : profile.fontSize + 6,
+              fontWeight: FontWeight.w800,
+              color: profile.textColor,
+              height: 1.3,
+            ),
+          ),
+          if (_lesson!.modules.isNotEmpty &&
+              _lesson!.modules.first.description.isNotEmpty) ...[
+            SizedBox(height: isDyslexia ? 16 : 10),
+            Text(
+              _lesson!.modules.first.description.isNotEmpty
+                  ? _lesson!.modules.first.description
+                  : '',
+              style: TextStyle(
+                fontFamily: profile.fontFamily,
+                fontSize: profile.fontSize - 1,
+                color: profile.textColor.withValues(alpha: 0.7),
+                height: profile.lineHeight,
               ),
-              child: Text(
-                'MODULE ${index + 1}',
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  // ===========================================
+  // KEY POINTS SECTION
+  // ===========================================
+
+  Widget _buildKeyPointsSection(NeuroProfile profile) {
+    final isAdhd = profile.profileType == NeuroProfileType.adhd;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 24),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: profile.cardColor,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: profile.accentColor.withValues(alpha: 0.15),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(isAdhd ? Icons.bolt_rounded : Icons.checklist_rounded,
+                  color: profile.accentColor, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                isAdhd ? '⚡ KEY TAKEAWAYS' : 'KEY POINTS',
                 style: TextStyle(
                   fontFamily: profile.fontFamily,
                   fontSize: 12,
                   fontWeight: FontWeight.w800,
                   color: profile.accentColor,
-                  letterSpacing: 2,
+                  letterSpacing: 1.5,
                 ),
               ),
-            ),
-            const SizedBox(height: 20),
-            Text(
-              module.title,
-              style: TextStyle(
-                fontFamily: profile.fontFamily,
-                fontSize: profile.fontSize + 8,
-                fontWeight: FontWeight.w800,
-                color: profile.textColor,
-                height: 1.2,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              module.description,
-              style: TextStyle(
-                fontFamily: profile.fontFamily,
-                fontSize: profile.fontSize,
-                color: profile.textColor.withValues(alpha: 0.6),
-                height: profile.lineHeight,
-              ),
-            ),
-            const SizedBox(height: 24),
-            ...module.sections.map((s) => _buildTextSection(s, profile)),
-            const SizedBox(height: 32),
-            Center(
-              child: Column(
+            ],
+          ),
+          const SizedBox(height: 16),
+          ...List.generate(_lesson!.keyPoints.length, (i) {
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Icon(Icons.swipe_up_rounded,
-                      color: Colors.grey, size: 28),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Swipe up for Quiz',
-                    style: TextStyle(
-                      fontFamily: profile.fontFamily,
-                      fontSize: 12,
-                      color: Colors.grey,
+                  Container(
+                    width: 24,
+                    height: 24,
+                    margin: const EdgeInsets.only(right: 12),
+                    decoration: BoxDecoration(
+                      color: profile.accentColor.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(8),
                     ),
-                  )
+                    child: Center(
+                      child: Text(
+                        '${i + 1}',
+                        style: TextStyle(
+                          fontFamily: profile.fontFamily,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: profile.accentColor,
+                        ),
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: Text(
+                      _lesson!.keyPoints[i],
+                      style: TextStyle(
+                        fontFamily: profile.fontFamily,
+                        fontSize: profile.fontSize,
+                        color: profile.textColor,
+                        height: profile.lineHeight,
+                      ),
+                    ),
+                  ),
                 ],
               ),
-            ).animate(onPlay: (c) => c.repeat()).slideY(
-                begin: 0, end: -0.5, duration: 1000.ms, curve: Curves.easeInOut),
-          ],
-        ),
+            );
+          }),
+        ],
       ),
     );
   }
 
-  Widget _buildFlashcard(Flashcard flashcard, NeuroProfile profile) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: FlipCard(
-          direction: FlipDirection.HORIZONTAL,
-          front: _buildCardSide(
-              'Question', flashcard.question, profile, Colors.orangeAccent),
-          back: _buildCardSide('Answer', flashcard.answer, profile,
-              const Color(0xFF4CAF50)),
-        ),
+  // ===========================================
+  // ADAPTIVE MODULES — Routes to profile layout
+  // ===========================================
+
+  Widget _buildAdaptiveModules(NeuroProfile profile) {
+    if (profile.profileType == NeuroProfileType.adhd) {
+      return _buildAdhdModules(profile);
+    } else if (profile.profileType == NeuroProfileType.dyslexia) {
+      return _buildDyslexiaModules(profile);
+    } else {
+      return _buildAutismModules(profile);
+    }
+  }
+
+  // ===========================================
+  // ADHD: Punchy cards with gradient borders
+  // ===========================================
+
+  Widget _buildAdhdModules(NeuroProfile profile) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Column(
+        children: List.generate(_lesson!.modules.length, (index) {
+          final module = _lesson!.modules[index];
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 20),
+            child: Column(
+              children: [
+                _buildAdhdModuleCard(module, profile, index),
+                if (module.flashcard != null) ...[
+                  const SizedBox(height: 16),
+                  _buildFlashcard(module.flashcard!, profile),
+                ],
+              ],
+            ),
+          );
+        }),
       ),
+    );
+  }
+
+  Widget _buildAdhdModuleCard(
+      LessonModule module, NeuroProfile profile, int index) {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: profile.cardColor,
+        borderRadius: BorderRadius.circular(28),
+        border: profile.focusBordersEnabled
+            ? Border.all(
+                color: profile.accentColor.withValues(alpha: 0.25), width: 2)
+            : null,
+        boxShadow: [
+          BoxShadow(
+            color: profile.accentColor.withValues(alpha: 0.1),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
+          )
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  profile.accentColor.withValues(alpha: 0.15),
+                  profile.accentColor.withValues(alpha: 0.05),
+                ],
+              ),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              '⚡ CARD ${index + 1}',
+              style: TextStyle(
+                fontFamily: profile.fontFamily,
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+                color: profile.accentColor,
+                letterSpacing: 2,
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            module.title,
+            style: TextStyle(
+              fontFamily: profile.fontFamily,
+              fontSize: profile.fontSize + 6,
+              fontWeight: FontWeight.w800,
+              color: profile.textColor,
+              height: 1.2,
+            ),
+          ),
+          if (module.description.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              module.description,
+              style: TextStyle(
+                fontFamily: profile.fontFamily,
+                fontSize: profile.fontSize - 1,
+                color: profile.textColor.withValues(alpha: 0.5),
+              ),
+            ),
+          ],
+          const SizedBox(height: 20),
+          ...module.sections.map((s) => Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: _buildTextSection(s, profile),
+              )),
+        ],
+      ),
+    ).animate().fadeIn(duration: 400.ms, delay: (index * 100).ms).slideY(
+        begin: 0.1, end: 0, duration: 400.ms, delay: (index * 100).ms);
+  }
+
+  Widget _buildFlashcard(Flashcard flashcard, NeuroProfile profile) {
+    return FlipCard(
+      direction: FlipDirection.HORIZONTAL,
+      front: _buildCardSide(
+          'QUESTION', flashcard.question, profile, Colors.orangeAccent),
+      back: _buildCardSide(
+          'ANSWER', flashcard.answer, profile, const Color(0xFF4CAF50)),
     );
   }
 
@@ -619,92 +912,135 @@ class _LessonScreenState extends State<LessonScreen> {
       String label, String text, NeuroProfile profile, Color accent) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(32),
+      padding: const EdgeInsets.all(28),
       decoration: BoxDecoration(
         color: profile.cardColor,
-        borderRadius: BorderRadius.circular(32),
-        border: Border.all(color: accent.withValues(alpha: 0.5), width: 3),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: accent.withValues(alpha: 0.4), width: 2),
         boxShadow: [
           BoxShadow(
-            color: accent.withValues(alpha: 0.2),
-            blurRadius: 30,
-            offset: const Offset(0, 10),
+            color: accent.withValues(alpha: 0.15),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
           )
         ],
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
-        mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Text(
-            label.toUpperCase(),
+            label,
             style: TextStyle(
               fontFamily: profile.fontFamily,
-              fontSize: 14,
+              fontSize: 12,
               fontWeight: FontWeight.w800,
               color: accent,
               letterSpacing: 2,
             ),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 20),
           Text(
             text,
             textAlign: TextAlign.center,
             style: TextStyle(
               fontFamily: profile.fontFamily,
-              fontSize: profile.fontSize + 4,
-              fontWeight: FontWeight.w700,
+              fontSize: profile.fontSize + 2,
+              fontWeight: FontWeight.w600,
               color: profile.textColor,
+              height: 1.5,
             ),
           ),
-          const SizedBox(height: 32),
+          const SizedBox(height: 20),
           Icon(Icons.touch_app_rounded,
-              color: profile.textColor.withValues(alpha: 0.2), size: 32),
+              color: profile.textColor.withValues(alpha: 0.15), size: 28),
+          Text(
+            'Tap to flip',
+            style: TextStyle(
+              fontFamily: profile.fontFamily,
+              fontSize: 11,
+              color: profile.textColor.withValues(alpha: 0.3),
+            ),
+          ),
         ],
       ),
     );
   }
 
   // ===========================================
-  // DYSLEXIA: High Spacing, Color Blocks
+  // DYSLEXIA: High spacing, color-coded blocks, large text
   // ===========================================
+
+  Widget _buildDyslexiaModules(NeuroProfile profile) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Column(
+        children: List.generate(_lesson!.modules.length, (index) {
+          final module = _lesson!.modules[index];
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 32),
+            child: _buildDyslexiaModuleCard(module, profile),
+          );
+        }),
+      ),
+    );
+  }
 
   Widget _buildDyslexiaModuleCard(LessonModule module, NeuroProfile profile) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // Title with thick underline
         Text(
           module.title,
           style: TextStyle(
             fontFamily: profile.fontFamily,
-            fontSize: profile.fontSize + 6,
+            fontSize: profile.fontSize + 4,
             fontWeight: FontWeight.w700,
             color: profile.textColor,
             height: profile.lineHeight,
             decoration: TextDecoration.underline,
-            decorationColor: profile.accentColor,
-            decorationThickness: 4,
+            decorationColor: profile.accentColor.withValues(alpha: 0.5),
+            decorationThickness: 3,
           ),
         ),
-        const SizedBox(height: 12),
-        Text(
-          module.description,
-          style: TextStyle(
-            fontFamily: profile.fontFamily,
-            fontSize: profile.fontSize,
-            color: profile.textColor.withValues(alpha: 0.8),
-            height: profile.lineHeight,
+        if (module.description.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          Text(
+            module.description,
+            style: TextStyle(
+              fontFamily: profile.fontFamily,
+              fontSize: profile.fontSize,
+              color: profile.textColor.withValues(alpha: 0.7),
+              height: profile.lineHeight,
+            ),
           ),
-        ),
-        const SizedBox(height: 24),
+        ],
+        const SizedBox(height: 20),
         ...module.sections.map((s) {
-          final isDef = s.type == 'definition';
+          // Color-coded containers per section_type
+          Color bgColor;
+          switch (s.type) {
+            case 'definition':
+              bgColor = const Color(0xFF1E3A5F).withValues(alpha: 0.15); // Blue tint
+              break;
+            case 'example':
+              bgColor = const Color(0xFF2E7D32).withValues(alpha: 0.12); // Green tint
+              break;
+            case 'summary':
+              bgColor = const Color(0xFFF9A825).withValues(alpha: 0.1); // Yellow tint
+              break;
+            default:
+              bgColor = profile.cardColor;
+          }
           return Container(
             margin: const EdgeInsets.only(bottom: 20),
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
-              color: isDef ? profile.definitionColor : profile.exampleColor,
+              color: bgColor,
               borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: profile.accentColor.withValues(alpha: 0.1),
+              ),
             ),
             child: _buildTextSection(s, profile),
           );
@@ -714,10 +1050,26 @@ class _LessonScreenState extends State<LessonScreen> {
   }
 
   // ===========================================
-  // AUTISM: Structured Accordion
+  // AUTISM: Structured accordions with numbering
   // ===========================================
 
-  Widget _buildAutismAccordion(LessonModule module, NeuroProfile profile) {
+  Widget _buildAutismModules(NeuroProfile profile) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Column(
+        children: List.generate(_lesson!.modules.length, (index) {
+          final module = _lesson!.modules[index];
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: _buildAutismAccordion(module, profile, index),
+          );
+        }),
+      ),
+    );
+  }
+
+  Widget _buildAutismAccordion(
+      LessonModule module, NeuroProfile profile, int index) {
     return Container(
       decoration: BoxDecoration(
         color: profile.cardColor,
@@ -727,6 +1079,25 @@ class _LessonScreenState extends State<LessonScreen> {
             : null,
       ),
       child: ExpansionTile(
+        leading: Container(
+          width: 32,
+          height: 32,
+          decoration: BoxDecoration(
+            color: profile.accentColor.withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Center(
+            child: Text(
+              '${index + 1}',
+              style: TextStyle(
+                fontFamily: profile.fontFamily,
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: profile.accentColor,
+              ),
+            ),
+          ),
+        ),
         title: Text(
           module.title,
           style: TextStyle(
@@ -736,17 +1107,19 @@ class _LessonScreenState extends State<LessonScreen> {
             color: profile.textColor,
           ),
         ),
-        subtitle: Text(
-          module.description,
-          style: TextStyle(
-            fontFamily: profile.fontFamily,
-            fontSize: profile.fontSize - 2,
-            color: profile.textColor.withValues(alpha: 0.5),
-          ),
-        ),
+        subtitle: module.description.isNotEmpty
+            ? Text(
+                module.description,
+                style: TextStyle(
+                  fontFamily: profile.fontFamily,
+                  fontSize: profile.fontSize - 2,
+                  color: profile.textColor.withValues(alpha: 0.5),
+                ),
+              )
+            : null,
         iconColor: profile.accentColor,
         collapsedIconColor: profile.textColor.withValues(alpha: 0.4),
-        childrenPadding: const EdgeInsets.all(20),
+        childrenPadding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
         children: module.sections
             .map((s) => Padding(
                   padding: const EdgeInsets.only(bottom: 16),
@@ -769,17 +1142,17 @@ class _LessonScreenState extends State<LessonScreen> {
       return _buildMermaidSection(section, profile);
     }
 
-    // ---- IMAGE: Render from base64 or URL ----
+    // ---- IMAGE: Render from URL ----
     if (section.type == 'image' && section.imageUrl != null) {
       return _buildImageSection(section, profile);
     }
 
-    // ---- DEEP DIVE: Expandable sub-topic button ----
+    // ---- DEEP DIVE: Expandable sub-topic ----
     if (section.type == 'deep_dive') {
       return _buildDeepDiveButton(section, profile);
     }
 
-    // ---- DEFAULT: Text section ----
+    // ---- DEFAULT: Text section with MarkdownBody ----
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -787,29 +1160,27 @@ class _LessonScreenState extends State<LessonScreen> {
           children: [
             Icon(
               _getIconForType(section.type),
-              size: 18,
+              size: 16,
               color: isDyslexia
-                  ? profile.textColor.withValues(alpha: 0.8)
+                  ? profile.textColor.withValues(alpha: 0.7)
                   : profile.accentColor,
             ),
             const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                section.heading.toUpperCase(),
-                style: TextStyle(
-                  fontFamily: profile.fontFamily,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w800,
-                  color: isDyslexia
-                      ? profile.textColor.withValues(alpha: 0.8)
-                      : profile.accentColor,
-                  letterSpacing: 1.5,
-                ),
+            Text(
+              section.heading.toUpperCase(),
+              style: TextStyle(
+                fontFamily: profile.fontFamily,
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+                color: isDyslexia
+                    ? profile.textColor.withValues(alpha: 0.7)
+                    : profile.accentColor,
+                letterSpacing: 1.5,
               ),
             ),
           ],
         ),
-        const SizedBox(height: 8),
+        SizedBox(height: isDyslexia ? 12 : 8),
         MarkdownBody(
           data: section.text,
           styleSheet: MarkdownStyleSheet(
@@ -856,10 +1227,7 @@ class _LessonScreenState extends State<LessonScreen> {
               color: profile.accentColor.withValues(alpha: 0.08),
               borderRadius: BorderRadius.circular(8),
               border: Border(
-                left: BorderSide(
-                  color: profile.accentColor,
-                  width: 3,
-                ),
+                left: BorderSide(color: profile.accentColor, width: 3),
               ),
             ),
           ),
@@ -874,15 +1242,316 @@ class _LessonScreenState extends State<LessonScreen> {
         return Icons.book_rounded;
       case 'example':
         return Icons.lightbulb_rounded;
+      case 'explanation':
+        return Icons.info_outline_rounded;
+      case 'summary':
+        return Icons.summarize_rounded;
       case 'graph':
         return Icons.schema_rounded;
       case 'image':
         return Icons.image_rounded;
       case 'deep_dive':
         return Icons.explore_rounded;
+      case 'quiz':
+        return Icons.quiz_rounded;
       default:
-        return Icons.info_outline_rounded;
+        return Icons.article_rounded;
     }
+  }
+
+  // ===========================================
+  // WIKIPEDIA LINKS
+  // ===========================================
+
+  Widget _buildWikipediaSection(NeuroProfile profile) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 24),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: profile.cardColor,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: profile.accentColor.withValues(alpha: 0.1),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.language_rounded,
+                  color: profile.accentColor, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                'LEARN MORE',
+                style: TextStyle(
+                  fontFamily: profile.fontFamily,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                  color: profile.accentColor,
+                  letterSpacing: 1.5,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          ...(_lesson!.wikipediaLinks.map((link) {
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: InkWell(
+                onTap: () async {
+                  final uri = Uri.tryParse(link.url);
+                  if (uri != null && await canLaunchUrl(uri)) {
+                    await launchUrl(uri, mode: LaunchMode.externalApplication);
+                  }
+                },
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: profile.accentColor.withValues(alpha: 0.06),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: profile.accentColor.withValues(alpha: 0.12),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.open_in_new_rounded,
+                          color: profile.accentColor, size: 18),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          link.title,
+                          style: TextStyle(
+                            fontFamily: profile.fontFamily,
+                            fontSize: profile.fontSize,
+                            color: profile.accentColor,
+                            fontWeight: FontWeight.w600,
+                            decoration: TextDecoration.underline,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          })),
+        ],
+      ),
+    );
+  }
+
+  // ===========================================
+  // MCQ QUIZ SECTION
+  // ===========================================
+
+  Widget _buildMcqQuizSection(NeuroProfile profile) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 24),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: profile.cardColor,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: profile.accentColor.withValues(alpha: 0.15),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.quiz_rounded,
+                  color: profile.accentColor, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                'QUIZ TIME',
+                style: TextStyle(
+                  fontFamily: profile.fontFamily,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                  color: profile.accentColor,
+                  letterSpacing: 1.5,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          ...List.generate(_lesson!.quizQuestions.length, (qi) {
+            final q = _lesson!.quizQuestions[qi];
+            final selected = _selectedAnswers[qi];
+            final isAnswered = selected != null;
+            final isCorrect = selected == q.answer;
+
+            return Container(
+              margin: const EdgeInsets.only(bottom: 20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Q${qi + 1}. ${q.question}',
+                    style: TextStyle(
+                      fontFamily: profile.fontFamily,
+                      fontSize: profile.fontSize,
+                      fontWeight: FontWeight.w600,
+                      color: profile.textColor,
+                      height: 1.5,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  ...q.options.map((option) {
+                    final isSelected = selected == option;
+                    final isCorrectOption = option == q.answer;
+                    Color optionColor = profile.accentColor.withValues(alpha: 0.06);
+                    Color borderColor = profile.accentColor.withValues(alpha: 0.12);
+                    Color textColor = profile.textColor;
+
+                    if (isAnswered) {
+                      if (isCorrectOption) {
+                        optionColor = const Color(0xFF4CAF50).withValues(alpha: 0.15);
+                        borderColor = const Color(0xFF4CAF50).withValues(alpha: 0.4);
+                        textColor = const Color(0xFF4CAF50);
+                      } else if (isSelected && !isCorrect) {
+                        optionColor = Colors.redAccent.withValues(alpha: 0.1);
+                        borderColor = Colors.redAccent.withValues(alpha: 0.3);
+                        textColor = Colors.redAccent;
+                      }
+                    }
+
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: InkWell(
+                        onTap: isAnswered
+                            ? null
+                            : () {
+                                setState(() {
+                                  _selectedAnswers[qi] = option;
+                                });
+                              },
+                        borderRadius: BorderRadius.circular(12),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 14),
+                          decoration: BoxDecoration(
+                            color: optionColor,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: borderColor),
+                          ),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  option,
+                                  style: TextStyle(
+                                    fontFamily: profile.fontFamily,
+                                    fontSize: profile.fontSize,
+                                    color: textColor,
+                                    fontWeight: isSelected
+                                        ? FontWeight.w600
+                                        : FontWeight.w400,
+                                  ),
+                                ),
+                              ),
+                              if (isAnswered && isCorrectOption)
+                                const Icon(Icons.check_circle_rounded,
+                                    color: Color(0xFF4CAF50), size: 20),
+                              if (isAnswered && isSelected && !isCorrect)
+                                const Icon(Icons.cancel_rounded,
+                                    color: Colors.redAccent, size: 20),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
+                  if (isAnswered)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(
+                        isCorrect ? '🎉 Correct!' : '❌ The answer is: ${q.answer}',
+                        style: TextStyle(
+                          fontFamily: profile.fontFamily,
+                          fontSize: profile.fontSize - 1,
+                          fontWeight: FontWeight.w600,
+                          color: isCorrect
+                              ? const Color(0xFF4CAF50)
+                              : Colors.redAccent,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  // ===========================================
+  // THINKING QUESTIONS
+  // ===========================================
+
+  Widget _buildThinkingQuestionsSection(NeuroProfile profile) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 24),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: profile.accentColor.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: profile.accentColor.withValues(alpha: 0.12),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.psychology_rounded,
+                  color: profile.accentColor, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                'THINK ABOUT IT',
+                style: TextStyle(
+                  fontFamily: profile.fontFamily,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                  color: profile.accentColor,
+                  letterSpacing: 1.5,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          ..._lesson!.thinkingQuestions.map((q) => Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('💭 ',
+                        style: TextStyle(fontSize: profile.fontSize)),
+                    Expanded(
+                      child: Text(
+                        q,
+                        style: TextStyle(
+                          fontFamily: profile.fontFamily,
+                          fontSize: profile.fontSize,
+                          fontStyle: FontStyle.italic,
+                          color: profile.textColor.withValues(alpha: 0.8),
+                          height: profile.lineHeight,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              )),
+        ],
+      ),
+    );
   }
 
   // ===========================================
@@ -891,7 +1560,6 @@ class _LessonScreenState extends State<LessonScreen> {
 
   Widget _buildMermaidSection(ModuleSection section, NeuroProfile profile) {
     final code = section.mermaidDiagram ?? '';
-    // Parse mermaid code into visual flow nodes
     final nodes = _parseMermaidToNodes(code);
 
     return Column(
@@ -899,13 +1567,13 @@ class _LessonScreenState extends State<LessonScreen> {
       children: [
         Row(
           children: [
-            Icon(Icons.schema_rounded, size: 18, color: profile.accentColor),
+            Icon(Icons.schema_rounded, size: 16, color: profile.accentColor),
             const SizedBox(width: 8),
             Text(
               'DIAGRAM',
               style: TextStyle(
                 fontFamily: profile.fontFamily,
-                fontSize: 12,
+                fontSize: 11,
                 fontWeight: FontWeight.w800,
                 color: profile.accentColor,
                 letterSpacing: 1.5,
@@ -926,7 +1594,6 @@ class _LessonScreenState extends State<LessonScreen> {
               ),
             ),
           ),
-        // Render the flowchart visually
         if (nodes.isNotEmpty) ...[
           Container(
             width: double.infinity,
@@ -975,7 +1642,6 @@ class _LessonScreenState extends State<LessonScreen> {
             ),
           ),
         ] else ...[
-          // Fallback: show raw mermaid code in a styled block
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(16),
@@ -1002,7 +1668,6 @@ class _LessonScreenState extends State<LessonScreen> {
   }
 
   List<String> _parseMermaidToNodes(String mermaid) {
-    // Simple parser: extract node labels from mermaid flowchart
     final nodes = <String>[];
     final lines = mermaid.split('\n');
     final labelRegex = RegExp(r'\[([^\]]+)\]|\(([^)]+)\)|"([^"]+)"');
@@ -1024,7 +1689,7 @@ class _LessonScreenState extends State<LessonScreen> {
   }
 
   // ===========================================
-  // IMAGE: Render AI-generated images
+  // IMAGE: Render images
   // ===========================================
 
   Widget _buildImageSection(ModuleSection section, NeuroProfile profile) {
@@ -1033,13 +1698,13 @@ class _LessonScreenState extends State<LessonScreen> {
       children: [
         Row(
           children: [
-            Icon(Icons.image_rounded, size: 18, color: profile.accentColor),
+            Icon(Icons.image_rounded, size: 16, color: profile.accentColor),
             const SizedBox(width: 8),
             Text(
               'ILLUSTRATION',
               style: TextStyle(
                 fontFamily: profile.fontFamily,
-                fontSize: 12,
+                fontSize: 11,
                 fontWeight: FontWeight.w800,
                 color: profile.accentColor,
                 letterSpacing: 1.5,
@@ -1055,55 +1720,9 @@ class _LessonScreenState extends State<LessonScreen> {
                   section.imageUrl!,
                   width: double.infinity,
                   fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => Container(
-                    height: 150,
-                    decoration: BoxDecoration(
-                      color: profile.accentColor.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.image_rounded,
-                              color: profile.accentColor, size: 32),
-                          const SizedBox(height: 8),
-                          Text(
-                            section.heading,
-                            style: TextStyle(
-                              fontFamily: profile.fontFamily,
-                              color: profile.textColor.withValues(alpha: 0.6),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
+                  errorBuilder: (_, __, ___) => _buildImagePlaceholder(section, profile),
                 )
-              : Container(
-                  height: 150,
-                  decoration: BoxDecoration(
-                    color: profile.accentColor.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.image_rounded,
-                            color: profile.accentColor, size: 32),
-                        const SizedBox(height: 8),
-                        Text(
-                          section.heading,
-                          style: TextStyle(
-                            fontFamily: profile.fontFamily,
-                            color: profile.textColor.withValues(alpha: 0.6),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
+              : _buildImagePlaceholder(section, profile),
         ),
         if (section.text.isNotEmpty) ...[
           const SizedBox(height: 8),
@@ -1121,6 +1740,34 @@ class _LessonScreenState extends State<LessonScreen> {
     );
   }
 
+  Widget _buildImagePlaceholder(ModuleSection section, NeuroProfile profile) {
+    return Container(
+      height: 120,
+      decoration: BoxDecoration(
+        color: profile.accentColor.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.image_rounded,
+                color: profile.accentColor.withValues(alpha: 0.4), size: 32),
+            const SizedBox(height: 8),
+            Text(
+              section.heading,
+              style: TextStyle(
+                fontFamily: profile.fontFamily,
+                fontSize: 12,
+                color: profile.textColor.withValues(alpha: 0.4),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   // ===========================================
   // DEEP DIVE: Get More Details Button
   // ===========================================
@@ -1131,9 +1778,10 @@ class _LessonScreenState extends State<LessonScreen> {
         Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (_) => LessonScreen(topic: section.heading == 'Deep Dive'
-                ? section.text.split('.').first
-                : section.heading),
+            builder: (_) => LessonScreen(
+                topic: section.heading == 'Deep Dive'
+                    ? section.text.split('.').first
+                    : section.heading),
           ),
         );
       },
@@ -1143,47 +1791,51 @@ class _LessonScreenState extends State<LessonScreen> {
         decoration: BoxDecoration(
           gradient: LinearGradient(
             colors: [
-              profile.accentColor.withValues(alpha: 0.15),
-              profile.accentColor.withValues(alpha: 0.05),
+              profile.accentColor.withValues(alpha: 0.12),
+              profile.accentColor.withValues(alpha: 0.04),
             ],
           ),
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
-            color: profile.accentColor.withValues(alpha: 0.3),
+            color: profile.accentColor.withValues(alpha: 0.2),
           ),
         ),
         child: Row(
           children: [
             Icon(Icons.explore_rounded,
-                color: profile.accentColor, size: 24),
+                color: profile.accentColor, size: 22),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    '🔍 Get More Details',
+                    '🔍 Explore: ${section.heading}',
                     style: TextStyle(
                       fontFamily: profile.fontFamily,
-                      fontSize: profile.fontSize,
+                      fontSize: profile.fontSize - 1,
                       fontWeight: FontWeight.w700,
                       color: profile.accentColor,
                     ),
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    section.text,
-                    style: TextStyle(
-                      fontFamily: profile.fontFamily,
-                      fontSize: profile.fontSize - 2,
-                      color: profile.textColor.withValues(alpha: 0.7),
+                  if (section.text.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      section.text,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontFamily: profile.fontFamily,
+                        fontSize: profile.fontSize - 2,
+                        color: profile.textColor.withValues(alpha: 0.6),
+                      ),
                     ),
-                  ),
+                  ],
                 ],
               ),
             ),
             Icon(Icons.arrow_forward_ios_rounded,
-                color: profile.accentColor, size: 16),
+                color: profile.accentColor, size: 14),
           ],
         ),
       ),

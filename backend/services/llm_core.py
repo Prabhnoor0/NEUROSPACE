@@ -303,6 +303,84 @@ def invoke_groq_json(
 
 
 # ============================================
+# Groq Vision (Image Understanding)
+# ============================================
+
+def invoke_groq_vision(
+    image_bytes: bytes,
+    prompt: str,
+    task_name: str = "vision_ocr",
+    max_retries: int = 3,
+    temperature: float = 0.2,
+) -> Optional[str]:
+    """
+    Send an image to Groq's vision model for OCR / understanding.
+
+    Args:
+        image_bytes: Raw image bytes (JPEG/PNG)
+        prompt: Text prompt describing what to extract
+        task_name: For logging
+        max_retries: Retry attempts
+        temperature: Model temperature
+
+    Returns:
+        The model's text response, or None on failure.
+    """
+    import base64
+
+    client = get_groq_client()
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{b64}",
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": prompt,
+                },
+            ],
+        }
+    ]
+
+    pool = groq_vision_pool
+
+    for attempt in range(max_retries):
+        model = pool.get_current_model()
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=4096,
+            )
+            result = response.choices[0].message.content.strip()
+            logger.info(f"[{task_name}] ✅ Vision success with '{model}' (attempt {attempt+1})")
+            return result
+
+        except Exception as e:
+            if _is_rate_limit_error(e):
+                logger.warning(f"[{task_name}] 429 on vision '{model}' — rotating...")
+                pool.mark_rate_limited(model)
+                continue
+            else:
+                logger.error(f"[{task_name}] Vision error on '{model}': {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+                    continue
+                return None
+
+    logger.error(f"[{task_name}] All {max_retries} vision retries exhausted.")
+    return None
+
+
+# ============================================
 # Gemini Invocation with Auto-Fallback
 # ============================================
 

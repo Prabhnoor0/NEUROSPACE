@@ -51,6 +51,12 @@ dependencies:
   path_provider: ^2.1.4
   flutter_tts: ^4.0.2
 
+  # URL Launcher (Wikipedia links, external URLs)
+  url_launcher: ^6.2.5
+
+  # Cached Network Images
+  cached_network_image: ^3.3.1
+
   # Firebase (free tier — Realtime Database + Anonymous Auth)
   firebase_core: ^3.9.0
   firebase_auth: ^5.4.2
@@ -60,6 +66,9 @@ dependencies:
   flutter_map: ^6.1.0
   latlong2: ^0.9.1
   geolocator: ^13.0.2
+
+  # On-device OCR (Snap-to-Understand — no network needed)
+  google_mlkit_text_recognition: ^0.14.0
 
 dev_dependencies:
   flutter_test:

@@ -5,16 +5,20 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:image_picker/image_picker.dart';
 import '../providers/neuro_theme_provider.dart';
 import '../models/neuro_profile.dart';
 import '../services/api_service.dart';
 import '../services/firebase_service.dart';
 import 'lesson_screen.dart';
+import 'search_screen.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'library_screen.dart';
 import 'focus_timer_screen.dart';
 import 'panic_screen.dart';
 import 'maps_screen.dart';
+import 'settings_screen.dart';
+import 'scan_result_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -110,15 +114,237 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (topic.trim().isEmpty) return;
     setState(() => _isSearching = true);
     
-    // Navigate to the dynamic lesson screen
+    // Navigate to the search screen with Wikipedia + web results
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => LessonScreen(topic: topic),
+        builder: (context) => SearchScreen(initialQuery: topic),
       ),
     );
     
     setState(() => _isSearching = false);
+  }
+
+  // =============================================
+  // Snap-to-Understand: Camera Scan Flow
+  // =============================================
+
+  Future<void> _launchScanFlow(BuildContext ctx) async {
+    final profile = Provider.of<NeuroThemeProvider>(ctx, listen: false);
+    final picker = ImagePicker();
+
+    // Show source picker bottom sheet
+    final source = await showModalBottomSheet<ImageSource>(
+      context: ctx,
+      backgroundColor: profile.activeProfile.cardColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '📸 Scan Text',
+                style: TextStyle(
+                  fontFamily: profile.activeProfile.fontFamily,
+                  fontSize: profile.activeProfile.fontSize + 4,
+                  fontWeight: FontWeight.w800,
+                  color: profile.activeProfile.textColor,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Take a photo or pick from gallery to simplify text',
+                style: TextStyle(
+                  fontFamily: profile.activeProfile.fontFamily,
+                  fontSize: profile.activeProfile.fontSize - 1,
+                  color: profile.activeProfile.textColor.withOpacity(0.6),
+                ),
+              ),
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  Expanded(
+                    child: _buildSourceOption(
+                      profile.activeProfile,
+                      icon: Icons.camera_alt_rounded,
+                      label: 'Camera',
+                      onTap: () => Navigator.pop(context, ImageSource.camera),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _buildSourceOption(
+                      profile.activeProfile,
+                      icon: Icons.photo_library_rounded,
+                      label: 'Gallery',
+                      onTap: () => Navigator.pop(context, ImageSource.gallery),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    if (source == null) return;
+
+    // Pick image
+    final XFile? pickedFile = await picker.pickImage(
+      source: source,
+      maxWidth: 2048,
+      maxHeight: 2048,
+      imageQuality: 85,
+    );
+
+    if (pickedFile == null || !mounted) return;
+
+    // Show scanning overlay
+    _showScanningOverlay(ctx, profile.activeProfile);
+
+    // Upload to backend
+    final currentProfile = profile.activeProfile.profileType == NeuroProfileType.adhd
+        ? 'ADHD'
+        : profile.activeProfile.profileType == NeuroProfileType.dyslexia
+            ? 'Dyslexia'
+            : 'Autism';
+
+    final result = await ApiService.scanImage(
+      pickedFile.path,
+      profile: currentProfile,
+    );
+
+    // Dismiss the overlay
+    if (mounted) Navigator.of(ctx).pop();
+
+    if (result != null && mounted) {
+      // Parse key terms
+      List<Map<String, dynamic>> keyTerms = [];
+      if (result['key_terms'] != null && result['key_terms'] is List) {
+        keyTerms = (result['key_terms'] as List)
+            .map((e) => Map<String, dynamic>.from(e as Map))
+            .toList();
+      }
+
+      Navigator.push(
+        ctx,
+        MaterialPageRoute(
+          builder: (_) => ScanResultScreen(
+            extractedText: result['extracted_text'] ?? '',
+            summary: result['summary'] ?? '',
+            simplified: result['simplified'] ?? '',
+            keyTerms: keyTerms,
+          ),
+        ),
+      );
+    } else if (mounted) {
+      ScaffoldMessenger.of(ctx).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Could not process the image. Try a clearer photo.',
+            style: TextStyle(fontFamily: profile.activeProfile.fontFamily),
+          ),
+          backgroundColor: Colors.red.shade700,
+        ),
+      );
+    }
+  }
+
+  Widget _buildSourceOption(
+    dynamic profileData, {
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 20),
+        decoration: BoxDecoration(
+          color: profileData.accentColor.withOpacity(0.08),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: profileData.accentColor.withOpacity(0.2),
+          ),
+        ),
+        child: Column(
+          children: [
+            Icon(icon, color: profileData.accentColor, size: 32),
+            const SizedBox(height: 8),
+            Text(
+              label,
+              style: TextStyle(
+                fontFamily: profileData.fontFamily,
+                fontSize: profileData.fontSize,
+                fontWeight: FontWeight.w600,
+                color: profileData.textColor,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showScanningOverlay(BuildContext ctx, dynamic profileData) {
+    showDialog(
+      context: ctx,
+      barrierDismissible: false,
+      builder: (context) => PopScope(
+        canPop: false,
+        child: Center(
+          child: Container(
+            margin: const EdgeInsets.all(40),
+            padding: const EdgeInsets.all(32),
+            decoration: BoxDecoration(
+              color: profileData.cardColor,
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.3),
+                  blurRadius: 30,
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(
+                  color: profileData.accentColor,
+                  strokeWidth: 3,
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  '🔍 Scanning & Simplifying...',
+                  style: TextStyle(
+                    fontFamily: profileData.fontFamily,
+                    fontSize: profileData.fontSize + 2,
+                    fontWeight: FontWeight.w700,
+                    color: profileData.textColor,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'AI is reading and rewriting the text\nfor your brain style',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontFamily: profileData.fontFamily,
+                    fontSize: profileData.fontSize - 2,
+                    color: profileData.textColor.withOpacity(0.6),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -229,7 +455,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ],
           ),
         ),
-        // Settings / Profile switch
+        // Settings
+        AnimatedContainer(
+          duration: const Duration(milliseconds: 400),
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            color: profile.cardColor,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: IconButton(
+            icon: Icon(Icons.settings_rounded,
+                color: profile.textColor.withValues(alpha: 0.5), size: 20),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const SettingsScreen(),
+                ),
+              );
+            },
+            padding: EdgeInsets.zero,
+          ),
+        ),
+        const SizedBox(width: 8),
+        // Profile switch
         AnimatedContainer(
           duration: const Duration(milliseconds: 400),
           width: 40,
@@ -285,7 +535,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           letterSpacing: profile.letterSpacing,
         ),
         decoration: InputDecoration(
-          hintText: 'What do you want to learn?',
+          hintText: 'Search Wikipedia, topics, anything...',
           hintStyle: TextStyle(
             fontFamily: profile.fontFamily,
             color: profile.textColor.withValues(alpha: 0.35),
@@ -297,16 +547,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
           suffixIcon: Padding(
             padding: const EdgeInsets.only(right: 8),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 300),
-              width: 38,
-              height: 38,
-              decoration: BoxDecoration(
-                color: profile.accentColor.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(12),
+            child: GestureDetector(
+              onTap: () => _launchScanFlow(context),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 300),
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: profile.accentColor.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(Icons.camera_alt_rounded,
+                    color: profile.accentColor.withValues(alpha: 0.5), size: 20),
               ),
-              child: Icon(Icons.camera_alt_rounded,
-                  color: profile.accentColor.withValues(alpha: 0.5), size: 20),
             ),
           ),
           border: InputBorder.none,

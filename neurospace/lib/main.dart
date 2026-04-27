@@ -1,12 +1,15 @@
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'firebase_options.dart';
 import 'providers/neuro_theme_provider.dart';
+import 'providers/bubble_provider.dart';
 import 'screens/splash_screen.dart';
 import 'screens/overlay_screen.dart';
 import 'screens/reader_screen.dart';
+import 'widgets/global_bubble.dart';
 import 'services/firebase_service.dart';
 
 @pragma("vm:entry-point")
@@ -27,14 +30,19 @@ void main() async {
   try {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
-    );
+    ).timeout(const Duration(seconds: 5));
   } catch (e) {
-    // App already initialized (e.g. iOS auto-init from GoogleService-Info.plist)
-    if (Firebase.apps.isEmpty) rethrow;
+    // App already initialized or timed out — continue anyway
+    debugPrint('Firebase init: $e');
   }
 
-  // Sign in anonymously (creates a persistent user ID)
-  await FirebaseService.ensureAuthenticated();
+  // Sign in anonymously (creates a persistent user ID) - don't block app startup
+  try {
+    await FirebaseService.ensureAuthenticated()
+        .timeout(const Duration(seconds: 5));
+  } catch (e) {
+    debugPrint('Firebase auth: $e');
+  }
 
   runApp(const NeuroSpaceApp());
 }
@@ -44,8 +52,15 @@ class NeuroSpaceApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider(
-      create: (_) => NeuroThemeProvider()..loadSavedProfile(),
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider(
+          create: (_) => NeuroThemeProvider()..loadSavedProfile(),
+        ),
+        ChangeNotifierProvider(
+          create: (_) => BubbleProvider(),
+        ),
+      ],
       child: Consumer<NeuroThemeProvider>(
         builder: (context, themeProvider, _) {
           return AnimatedTheme(
@@ -56,6 +71,17 @@ class NeuroSpaceApp extends StatelessWidget {
               title: 'NeuroSpace',
               debugShowCheckedModeBanner: false,
               theme: themeProvider.themeData,
+              // Use a builder to inject the global bubble ABOVE the Navigator
+              // so it persists across all screen navigations.
+              builder: (context, child) {
+                return Stack(
+                  children: [
+                    child!,
+                    // Global Accessibility Bubble — always on top
+                    const GlobalAccessibilityBubble(),
+                  ],
+                );
+              },
               home: const _AppShell(),
             ),
           );
@@ -78,22 +104,28 @@ class _AppShellState extends State<_AppShell> {
   @override
   void initState() {
     super.initState();
-    // Listen for data shared from the overlay
-    FlutterOverlayWindow.overlayListener.listen((event) {
-      if (event is String && event.startsWith('open_reader:')) {
-        final text = event.substring('open_reader:'.length);
-        if (text.isNotEmpty && mounted) {
-          Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => ReaderScreen(
-                title: 'Shared Text',
-                content: text,
-              ),
-            ),
-          );
-        }
+    // Listen for data shared from the overlay (Android only)
+    if (Platform.isAndroid) {
+      try {
+        FlutterOverlayWindow.overlayListener.listen((event) {
+          if (event is String && event.startsWith('open_reader:')) {
+            final text = event.substring('open_reader:'.length);
+            if (text.isNotEmpty && mounted) {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => ReaderScreen(
+                    title: 'Shared Text',
+                    content: text,
+                  ),
+                ),
+              );
+            }
+          }
+        });
+      } catch (_) {
+        // Overlay not supported on this platform
       }
-    });
+    }
   }
 
   @override

@@ -284,4 +284,60 @@ class ApiService {
       return null;
     }
   }
+
+  // =============================================
+  // Maps / Quiet Spaces
+  // =============================================
+
+  /// Fetch quiet spaces using coordinates
+  static Future<List<Map<String, dynamic>>> fetchQuietSpaces(
+      double lat, double lng) async {
+    try {
+      final response = await http
+          .get(Uri.parse('$baseUrl/api/quiet-spaces?lat=$lat&lng=$lng'))
+          .timeout(const Duration(seconds: 15));
+
+      if (response.statusCode == 200) {
+        final List<dynamic> data = json.decode(response.body);
+        return data.cast<Map<String, dynamic>>();
+      }
+      return [];
+    } catch (e) {
+      debugPrint('Maps API error: $e');
+      return [];
+    }
+  }
+
+  // =============================================
+  // Image Scan & Simplification
+  // =============================================
+
+  /// Upload an image for OCR + AI simplification.
+  /// Returns a map with: extracted_text, summary, simplified, key_terms
+  static Future<Map<String, dynamic>?> scanImage(
+    String filePath, {
+    String profile = 'ADHD',
+  }) async {
+    try {
+      final uri = Uri.parse('$baseUrl/api/scan-image?profile=$profile');
+      final request = http.MultipartRequest('POST', uri);
+
+      request.files.add(
+        await http.MultipartFile.fromPath('image', filePath),
+      );
+
+      final streamedResponse =
+          await request.send().timeout(const Duration(seconds: 30));
+      final response = await http.Response.fromStream(streamedResponse);
+
+      if (response.statusCode == 200) {
+        return json.decode(response.body) as Map<String, dynamic>;
+      }
+      debugPrint('Scan failed: ${response.statusCode} — ${response.body}');
+      return null;
+    } catch (e) {
+      debugPrint('Scan error: $e');
+      return null;
+    }
+  }
 }

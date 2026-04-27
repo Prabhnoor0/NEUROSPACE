@@ -193,10 +193,15 @@ async def _retry_with_strict_prompt(
 
 
 def _fallback_lesson(topic: str) -> dict:
-    """Return a minimal fallback lesson when all AI models fail."""
+    """Return a minimal fallback lesson when all AI models fail.
+    Includes all unified schema fields for frontend compatibility."""
     return {
         "title": f"Lesson: {topic}",
         "summary": f"An overview of {topic}.",
+        "key_points": [
+            f"{topic} is an important concept worth understanding.",
+            "Try searching again for a more detailed lesson.",
+        ],
         "modules": [
             {
                 "type": "text_block",
@@ -205,6 +210,15 @@ def _fallback_lesson(topic: str) -> dict:
                 "section_type": "explanation",
             }
         ],
+        "wikipedia_links": [],
+        "interactive": {
+            "questions": [],
+            "quiz": [],
+        },
+        "accessibility": {
+            "simplified_text": f"This lesson is about {topic}. We couldn't generate full content right now. Please try again.",
+            "audio_script": f"This lesson is about {topic}. Unfortunately, we had trouble generating the full content. Please try again later.",
+        },
         "tts_text": f"We encountered an issue generating the lesson for {topic}. Please try again.",
     }
 

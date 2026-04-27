@@ -3,7 +3,9 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:geolocator/geolocator.dart';
 import '../providers/neuro_theme_provider.dart';
+import '../services/api_service.dart';
 
 class QuietMapScreen extends StatefulWidget {
   const QuietMapScreen({super.key});
@@ -15,46 +17,97 @@ class QuietMapScreen extends StatefulWidget {
 class _QuietMapScreenState extends State<QuietMapScreen> {
   final MapController _mapController = MapController();
   int _selectedIndex = 0;
+  bool _isLoading = true;
+  LatLng _currentLocation = const LatLng(37.7749, -122.4194); // Fallback SF
 
-  // Mock data for sensory-friendly 'Quiet Spaces'
-  final List<Map<String, dynamic>> _quietPlaces = [
-    {
-      'name': 'Central Library - Silence Floor',
-      'category': 'Study Space',
-      'location': LatLng(37.7749, -122.4194),
-      'crowd': 'Very Low',
-      'lighting': 'Dim / Natural',
-      'noise': 'Silent',
-      'image_icon': Icons.local_library_rounded,
-    },
-    {
-      'name': 'Golden Gate Conservatory',
-      'category': 'Nature Reserve',
-      'location': LatLng(37.7700, -122.4600),
-      'crowd': 'Moderate',
-      'lighting': 'Bright / Sunlit',
-      'noise': 'White Noise (Water/Wind)',
-      'image_icon': Icons.park_rounded,
-    },
-    {
-      'name': 'Neuro-Inclusive Café',
-      'category': 'Coffee & Work',
-      'location': LatLng(37.7800, -122.4250),
-      'crowd': 'Low',
-      'lighting': 'Warm Ambient',
-      'noise': 'Soft Jazz / Low Chatter',
-      'image_icon': Icons.local_cafe_rounded,
-    },
-    {
-      'name': 'Sensory Deprivation Spas',
-      'category': 'Wellness Break',
-      'location': LatLng(37.7650, -122.4200),
-      'crowd': 'None',
-      'lighting': 'Pitch Black',
-      'noise': 'Complete Silence',
-      'image_icon': Icons.spa_rounded,
-    },
-  ];
+  List<Map<String, dynamic>> _quietPlaces = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _initLocationAndFetchPlaces();
+  }
+
+  Future<void> _initLocationAndFetchPlaces() async {
+    bool serviceEnabled;
+    LocationPermission permission;
+
+    serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      // Location services disabled, fallback to default and fetch
+      await _fetchPlaces(_currentLocation);
+      return;
+    }
+
+    permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        await _fetchPlaces(_currentLocation);
+        return;
+      }
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      await _fetchPlaces(_currentLocation);
+      return;
+    }
+
+    try {
+      Position position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.medium);
+      _currentLocation = LatLng(position.latitude, position.longitude);
+    } catch (e) {
+      debugPrint("Error getting location: $e");
+      // Fallback
+    }
+
+    await _fetchPlaces(_currentLocation);
+  }
+
+  Future<void> _fetchPlaces(LatLng loc) async {
+    setState(() => _isLoading = true);
+    try {
+      final results = await ApiService.fetchQuietSpaces(loc.latitude, loc.longitude);
+      
+      final parsedPlaces = results.map((p) {
+        final locData = p['location'] as Map<String, dynamic>;
+        
+        // Map string icons to IconData
+        IconData icon = Icons.park_rounded;
+        if (p['image_icon'] == 'cafe') icon = Icons.local_cafe_rounded;
+        if (p['image_icon'] == 'library') icon = Icons.local_library_rounded;
+        if (p['image_icon'] == 'spa') icon = Icons.spa_rounded;
+
+        return {
+          'name': p['name'],
+          'category': p['category'] ?? 'Sanctuary',
+          'location': LatLng((locData['lat'] as num).toDouble(), (locData['lng'] as num).toDouble()),
+          'crowd': p['crowd'] ?? 'Unknown',
+          'lighting': p['lighting'] ?? 'Standard',
+          'noise': p['noise'] ?? 'Unknown',
+          'image_icon': icon,
+        };
+      }).toList();
+
+      if (mounted) {
+        setState(() {
+          _quietPlaces = parsedPlaces;
+          _isLoading = false;
+        });
+        
+        if (_quietPlaces.isNotEmpty) {
+          _mapController.move(_quietPlaces[0]['location'], 14.5);
+        } else {
+          _mapController.move(loc, 14.0);
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
 
   @override
   void dispose() {
@@ -63,8 +116,9 @@ class _QuietMapScreenState extends State<QuietMapScreen> {
   }
 
   void _onCardChanged(int index) {
+    if (_quietPlaces.isEmpty) return;
     setState(() => _selectedIndex = index);
-    _mapController.move(_quietPlaces[index]['location'], 14.5);
+    _mapController.move(_quietPlaces[index]['location'], 15.0);
   }
 
   @override
@@ -146,6 +200,19 @@ class _QuietMapScreenState extends State<QuietMapScreen> {
               ),
             ],
           ),
+
+          // 1.5 Loading Overlay
+          if (_isLoading)
+            Positioned.fill(
+              child: Container(
+                color: profile.backgroundColor.withValues(alpha: 0.5),
+                child: Center(
+                  child: CircularProgressIndicator(
+                    color: profile.accentColor,
+                  ),
+                ),
+              ),
+            ),
 
           // 2. Custom App Bar Overlay
           Positioned(

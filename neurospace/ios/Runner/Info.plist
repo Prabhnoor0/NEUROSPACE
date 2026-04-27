@@ -71,5 +71,13 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>NeuroSpace needs your location to find quiet spaces, libraries, and cafes near you.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>NeuroSpace needs your location to find nearby sensory-friendly places.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>NeuroSpace uses your camera to scan text from photos, menus, and documents for instant simplification.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>NeuroSpace needs photo library access so you can pick images to scan and simplify.</string>
 </dict>
 </plist>
