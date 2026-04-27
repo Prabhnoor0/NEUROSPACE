@@ -29,17 +29,13 @@ class OverlayScreen extends StatefulWidget {
   State<OverlayScreen> createState() => _OverlayScreenState();
 }
 
-class _OverlayScreenState extends State<OverlayScreen>
-    with TickerProviderStateMixin {
+class _OverlayScreenState extends State<OverlayScreen> {
   // ── State ────────────────────────────────────────────
   _OverlayState _state = _OverlayState.bubble;
   _ActionType _activeAction = _ActionType.none;
   bool _isLoading = false;
   String _resultText = '';
   String _clipboardText = '';
-
-  // ── Animation ────────────────────────────────────────
-  late AnimationController _bubbleController;
 
   // ── Audio ────────────────────────────────────────────
   final AudioPlayer _audioPlayer = AudioPlayer();
@@ -95,11 +91,6 @@ class _OverlayScreenState extends State<OverlayScreen>
   void initState() {
     super.initState();
 
-    _bubbleController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 3),
-    )..repeat(reverse: true);
-
     // Listen for messages from the main app
     try {
       FlutterOverlayWindow.overlayListener.listen((event) {
@@ -114,7 +105,6 @@ class _OverlayScreenState extends State<OverlayScreen>
 
   @override
   void dispose() {
-    _bubbleController.dispose();
     _audioPlayer.dispose();
     super.dispose();
   }
@@ -123,11 +113,18 @@ class _OverlayScreenState extends State<OverlayScreen>
   //  STATE TRANSITIONS
   // ══════════════════════════════════════════════════════
 
-  void _expandToMenu() {
+  Future<void> _expandToMenu() async {
     setState(() => _state = _OverlayState.actionMenu);
+    try {
+      await FlutterOverlayWindow.resizeOverlay(
+        WindowSize.matchParent,
+        WindowSize.matchParent,
+        false,
+      );
+    } catch (_) {}
   }
 
-  void _collapseToBubble() {
+  Future<void> _collapseToBubble() async {
     _audioPlayer.stop();
     setState(() {
       _state = _OverlayState.bubble;
@@ -137,10 +134,20 @@ class _OverlayScreenState extends State<OverlayScreen>
       _clipboardText = '';
       _isPlaying = false;
     });
+    try {
+      await FlutterOverlayWindow.resizeOverlay(80, 80, false);
+    } catch (_) {}
   }
 
-  void _expandToResult() {
+  Future<void> _expandToResult() async {
     setState(() => _state = _OverlayState.result);
+    try {
+      await FlutterOverlayWindow.resizeOverlay(
+        WindowSize.matchParent,
+        WindowSize.matchParent,
+        false,
+      );
+    } catch (_) {}
   }
 
   // ══════════════════════════════════════════════════════

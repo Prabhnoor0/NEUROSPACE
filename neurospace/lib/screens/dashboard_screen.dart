@@ -89,9 +89,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         overlayContent: "Tap the bubble for accessibility tools",
         flag: OverlayFlag.defaultFlag,
         visibility: NotificationVisibility.visibilityPublic,
-        positionGravity: PositionGravity.none,
-        width: WindowSize.matchParent,
-        height: WindowSize.matchParent,
+        positionGravity: PositionGravity.right,
+        width: 80,
+        height: 80,
       );
   }
 
