@@ -53,24 +53,25 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   Future<void> _checkBackendAndNavigate() async {
-    // Wait for animation to play
-    await Future.delayed(const Duration(milliseconds: 800));
-
     // Try to reach the backend
-    setState(() => _statusMessage = 'Connecting to NeuroSpace servers...');
+    if (mounted) {
+      setState(() => _statusMessage = 'Connecting to NeuroSpace servers...');
+    }
 
     try {
       final health = await ApiService.healthCheck();
       _backendConnected = true;
-      setState(
-          () => _statusMessage = '✅ Connected! v${health['version'] ?? ''}');
+      if (mounted) {
+        setState(
+          () => _statusMessage = '✅ Connected! v${health['version'] ?? ''}',
+        );
+      }
     } catch (e) {
       _backendConnected = false;
-      setState(() => _statusMessage = '⚠️ Offline mode — backend unreachable');
+      if (mounted) {
+        setState(() => _statusMessage = '⚠️ Offline mode — backend unreachable');
+      }
     }
-
-    // Wait a beat, then navigate
-    await Future.delayed(const Duration(milliseconds: 1200));
 
     if (!mounted) return;
 

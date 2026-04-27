@@ -169,7 +169,7 @@ Request JSON (using `messages` like ChatGPT):
 - **Routing:** Optionally, use a lightweight rule (e.g. if query mentions "image" or >8000 chars, prefer Gemini【27†L179-L188】). For most short text, default to Groq for speed.  
 
 ## JSON Parser Pseudocode  
-```python
+```pythno
 response = call_gemini_api(prompt, schema)
 try:
     data = json.loads(response)

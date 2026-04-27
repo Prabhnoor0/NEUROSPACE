@@ -9,9 +9,14 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'dart:io' show Platform;
 
+import '../models/assistant_content_payload.dart';
+import '../services/assistant_action_engine.dart';
+import '../services/assistant_content_service.dart';
+import '../services/api_service.dart';
+
 enum BubbleState { collapsed, expanded, result }
 
-enum BubbleAction { none, tts, summarize, easyRead, scan }
+enum BubbleAction { none, tts, simplify, summarize, easyRead, scan, voice }
 
 class BubbleProvider extends ChangeNotifier {
   // ── State ──
@@ -27,6 +32,8 @@ class BubbleProvider extends ChangeNotifier {
 
   // ── TTS ──
   final FlutterTts _tts = FlutterTts();
+  final AssistantContentService _contentService = AssistantContentService();
+  final AssistantActionEngine _actionEngine = const AssistantActionEngine();
 
   BubbleProvider() {
     _initTts();
@@ -59,12 +66,41 @@ class BubbleProvider extends ChangeNotifier {
   String get errorText => _errorText;
 
   // ── Backend URL ──
-  String get _baseUrl {
+  List<String> get _baseUrls {
     if (Platform.isAndroid) {
-      return 'http://10.0.2.2:8000';
-    } else {
-      return 'http://localhost:8000';
+      return const [
+        'http://10.0.2.2:8000',
+        'http://10.0.2.2:8001',
+      ];
     }
+    return const [
+      'http://localhost:8000',
+      'http://127.0.0.1:8000',
+      'http://localhost:8001',
+      'http://127.0.0.1:8001',
+    ];
+  }
+
+  Future<http.Response> _postToBackend(
+    String path,
+    Map<String, dynamic> payload,
+  ) async {
+    Object? lastError;
+    for (final baseUrl in _baseUrls) {
+      try {
+        final response = await http
+            .post(
+              Uri.parse('$baseUrl$path'),
+              headers: {'Content-Type': 'application/json'},
+              body: json.encode(payload),
+            )
+            .timeout(const Duration(seconds: 30));
+        return response;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? Exception('No backend URL could be reached');
   }
 
   // ══════════════════════════════════════════════
@@ -133,18 +169,29 @@ class BubbleProvider extends ChangeNotifier {
     }
   }
 
+  Future<AssistantContentPayload> _resolvePayload({String? text}) async {
+    if (text != null && text.trim().isNotEmpty) {
+      return _contentService.fromPastedText(text);
+    }
+
+    final accessibilityActive = await _contentService.isAccessibilityServiceActive();
+    if (accessibilityActive) {
+      final screenPayload = await _contentService.fromAccessibilityScreen();
+      if (screenPayload.hasEnoughText) return screenPayload;
+    }
+
+    final clipboardPayload = await _contentService.fromClipboard();
+    return clipboardPayload;
+  }
+
   // ══════════════════════════════════════════════
   //  ACTION: TEXT-TO-SPEECH
   // ══════════════════════════════════════════════
 
   Future<void> handleTTS({String? text, double speechRate = 0.45}) async {
-    String textToRead = text ?? '';
+    final payload = await _resolvePayload(text: text);
 
-    if (textToRead.isEmpty) {
-      textToRead = await _getClipboard();
-    }
-
-    if (textToRead.isEmpty || textToRead.length < 5) {
+    if (!payload.hasEnoughText) {
       _currentAction = BubbleAction.tts;
       _errorText = '📋 No text to read!\n\nCopy some text first, then tap Read Aloud.';
       _state = BubbleState.result;
@@ -153,15 +200,15 @@ class BubbleProvider extends ChangeNotifier {
     }
 
     _currentAction = BubbleAction.tts;
-    _clipboardText = textToRead;
-    _resultText = textToRead;
+    _clipboardText = payload.text;
+    _resultText = payload.text;
     _state = BubbleState.result;
     _isSpeaking = true;
     notifyListeners();
 
     try {
       await _tts.setSpeechRate(speechRate);
-      await _tts.speak(textToRead);
+      await _tts.speak(payload.text);
     } catch (e) {
       _isSpeaking = false;
       _errorText = '⚠️ TTS error: $e';
@@ -189,14 +236,45 @@ class BubbleProvider extends ChangeNotifier {
   //  ACTION: SUMMARIZE
   // ══════════════════════════════════════════════
 
-  Future<void> handleSummarize({String? text, String profile = 'adhd'}) async {
-    String textToSummarize = text ?? '';
+  Future<void> handleSimplify({String? text, String profile = 'ADHD'}) async {
+    final payload = await _resolvePayload(text: text);
 
-    if (textToSummarize.isEmpty) {
-      textToSummarize = await _getClipboard();
+    if (!payload.hasEnoughText) {
+      _currentAction = BubbleAction.simplify;
+      _errorText =
+          '📋 No text to simplify!\n\nCopy some text first, then tap Simplify.';
+      _state = BubbleState.result;
+      notifyListeners();
+      return;
     }
 
-    if (textToSummarize.isEmpty || textToSummarize.length < 10) {
+    _currentAction = BubbleAction.simplify;
+    _clipboardText = payload.text;
+    _isProcessing = true;
+    _errorText = '';
+    _state = BubbleState.result;
+    notifyListeners();
+
+    try {
+      final result = await _actionEngine.simplify(payload, profile: profile);
+      if (result.success) {
+        _resultText = result.primaryText;
+      } else {
+        _errorText = '⚠️ ${result.primaryText} Try again.';
+      }
+    } catch (e) {
+      _errorText =
+          '⚠️ Could not reach backend.\nMake sure it\'s running on ${_baseUrls.join(' or ')}.';
+    }
+
+    _isProcessing = false;
+    notifyListeners();
+  }
+
+  Future<void> handleSummarize({String? text, String profile = 'ADHD'}) async {
+    final payload = await _resolvePayload(text: text);
+
+    if (!payload.hasEnoughText) {
       _currentAction = BubbleAction.summarize;
       _errorText =
           '📋 No text to summarize!\n\nCopy some text first, then tap Summarize.';
@@ -206,47 +284,22 @@ class BubbleProvider extends ChangeNotifier {
     }
 
     _currentAction = BubbleAction.summarize;
-    _clipboardText = textToSummarize;
+    _clipboardText = payload.text;
     _isProcessing = true;
+    _errorText = '';
     _state = BubbleState.result;
     notifyListeners();
 
     try {
-      final response = await http
-          .post(
-            Uri.parse('$_baseUrl/api/simplify'),
-            headers: {'Content-Type': 'application/json'},
-            body: json.encode({
-              'text': textToSummarize,
-              'user_profile': profile,
-            }),
-          )
-          .timeout(const Duration(seconds: 30));
-
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        final simplified = data['simplified_text'] ?? '';
-        final modules = data['modules'] as List? ?? [];
-
-        String display = '';
-        if (modules.isNotEmpty) {
-          for (final mod in modules) {
-            final title = mod['title'] ?? '';
-            final content = mod['content'] ?? '';
-            display += '📌 $title\n$content\n\n';
-          }
-        } else if (simplified.isNotEmpty) {
-          display = simplified;
-        } else {
-          display = 'Could not summarize this text.';
-        }
-
-        _resultText = display.trim();
+      final result = await _actionEngine.summarize(payload, profile: profile);
+      if (result.success) {
+        _resultText = result.primaryText;
       } else {
-        _errorText = '⚠️ Backend error (${response.statusCode}). Try again.';
+        _errorText = '⚠️ ${result.primaryText} Try again.';
       }
     } catch (e) {
-      _errorText = '⚠️ Could not reach backend.\nMake sure it\'s running.';
+      _errorText =
+          '⚠️ Could not reach backend.\nMake sure it\'s running on ${_baseUrls.join(' or ')}.';
     }
 
     _isProcessing = false;
@@ -258,13 +311,9 @@ class BubbleProvider extends ChangeNotifier {
   // ══════════════════════════════════════════════
 
   Future<void> handleEasyRead({String? text}) async {
-    String textToFormat = text ?? '';
+    final payload = await _resolvePayload(text: text);
 
-    if (textToFormat.isEmpty) {
-      textToFormat = await _getClipboard();
-    }
-
-    if (textToFormat.isEmpty || textToFormat.length < 5) {
+    if (!payload.hasEnoughText) {
       _currentAction = BubbleAction.easyRead;
       _errorText =
           '📋 No text to format!\n\nCopy some text first, then tap Easy Read.';
@@ -274,37 +323,56 @@ class BubbleProvider extends ChangeNotifier {
     }
 
     _currentAction = BubbleAction.easyRead;
-    _clipboardText = textToFormat;
+    _clipboardText = payload.text;
+    final result = _actionEngine.easyRead(payload);
+    _resultText = result.primaryText;
+    _state = BubbleState.result;
+    notifyListeners();
+  }
 
-    // Format locally for instant response:
-    // - Break into short sentences
-    // - Add bullet points
-    // - Clean up whitespace
-    final sentences = textToFormat
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .split(RegExp(r'(?<=[.!?])\s+'))
-        .where((s) => s.trim().isNotEmpty)
-        .toList();
+  Future<void> handleVoiceCommand(String transcription) async {
+    _currentAction = BubbleAction.voice;
+    _isProcessing = true;
+    _errorText = '';
+    _state = BubbleState.result;
+    notifyListeners();
 
-    final buffer = StringBuffer();
-    for (int i = 0; i < sentences.length; i++) {
-      String sentence = sentences[i].trim();
-      // Keep sentences short — split long ones at commas
-      if (sentence.length > 80) {
-        final parts = sentence.split(RegExp(r',\s*'));
-        for (final part in parts) {
-          if (part.trim().isNotEmpty) {
-            buffer.writeln('• ${part.trim()}');
-          }
-        }
-      } else {
-        buffer.writeln('• $sentence');
+    try {
+      final intent = await ApiService.parseVoiceIntent(transcription);
+      final feature = (intent?['feature_name'] ?? '').toString().toLowerCase();
+
+      if (feature == 'read') {
+        _isProcessing = false;
+        notifyListeners();
+        await handleTTS();
+        return;
       }
-      if (i < sentences.length - 1) buffer.writeln();
+      if (feature == 'simplify') {
+        _isProcessing = false;
+        notifyListeners();
+        await handleSimplify();
+        return;
+      }
+      if (feature == 'summarize') {
+        _isProcessing = false;
+        notifyListeners();
+        await handleSummarize();
+        return;
+      }
+      if (feature == 'close') {
+        _isProcessing = false;
+        collapse();
+        return;
+      }
+
+      _resultText = (intent?['speak_message'] ??
+              'I could not match that command. Try: read this, simplify this, summarize this.')
+          .toString();
+    } catch (e) {
+      _errorText = '⚠️ Voice command failed. Please try again.';
     }
 
-    _resultText = buffer.toString().trim();
-    _state = BubbleState.result;
+    _isProcessing = false;
     notifyListeners();
   }
 

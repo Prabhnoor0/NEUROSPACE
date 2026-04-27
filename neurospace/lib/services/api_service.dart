@@ -340,4 +340,32 @@ class ApiService {
       return null;
     }
   }
+
+  // =============================================
+  // Voice Command Parsing
+  // =============================================
+
+  /// Parse transcribed voice text into a structured assistant command.
+  static Future<Map<String, dynamic>?> parseVoiceIntent(
+    String transcription,
+  ) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl/api/voice/intent'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({'transcription': transcription}),
+          )
+          .timeout(const Duration(seconds: 20));
+
+      if (response.statusCode == 200) {
+        return json.decode(response.body) as Map<String, dynamic>;
+      }
+      debugPrint('Voice intent failed: ${response.statusCode}');
+      return null;
+    } catch (e) {
+      debugPrint('Voice intent error: $e');
+      return null;
+    }
+  }
 }

@@ -50,6 +50,7 @@ dependencies:
   flutter_overlay_window: ^0.5.0
   path_provider: ^2.1.4
   flutter_tts: ^4.0.2
+  speech_to_text: ^7.0.0
 
   # URL Launcher (Wikipedia links, external URLs)
   url_launcher: ^6.2.5

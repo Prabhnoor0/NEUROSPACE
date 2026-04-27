@@ -255,16 +255,57 @@ Return the JSON lesson structure with "title", "summary", "modules", and "tts_te
 Return ONLY valid JSON, no extra text.
 """
 
+    # Attempt 1: Gemini
     lesson_data = invoke_gemini_json(
         prompt=simplify_prompt,
         task_name="text_simplification",
         temperature=0.5,
     )
-
-    if lesson_data:
+    if lesson_data and "modules" in lesson_data:
         return lesson_data
 
-    raise RuntimeError("Failed to simplify text after all retries.")
+    # Attempt 2: Groq fallback
+    logger.warning("Gemini simplify failed. Trying Groq fallback...")
+    groq_messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": simplify_prompt},
+    ]
+    groq_data = invoke_groq_json(
+        messages=groq_messages,
+        task_name="text_simplification_groq",
+        temperature=0.4,
+    )
+    if groq_data and "modules" in groq_data:
+        return groq_data
+
+    logger.error("All simplify model attempts failed. Returning local fallback content.")
+    return _fallback_simplified_text(text)
+
+
+def _fallback_simplified_text(text: str) -> dict:
+    """Return a minimal simplified response when model providers are unavailable."""
+    cleaned = " ".join(text.split())
+    preview = cleaned[:400]
+    if len(cleaned) > 400:
+        preview += "..."
+
+    return {
+        "title": "Quick Summary",
+        "summary": "Backend AI models are temporarily busy. Showing a basic simplification.",
+        "modules": [
+            {
+                "type": "text_block",
+                "section_type": "summary",
+                "content": preview or "No text provided.",
+            },
+            {
+                "type": "key_point",
+                "content": "Try again in a few seconds for a richer AI simplification.",
+                "icon": "💡",
+            },
+        ],
+        "tts_text": preview or "No text provided.",
+    }
 
 
 # ============================================

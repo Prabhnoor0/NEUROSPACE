@@ -13,7 +13,14 @@ import 'package:path_provider/path_provider.dart';
 enum _OverlayState { bubble, actionMenu, result }
 
 /// Which action the user picked from the menu.
-enum _ActionType { none, summarizePage, summarizeClipboard, tts }
+enum _ActionType {
+  none,
+  summarizePage,
+  simplifyClipboard,
+  summarizeClipboard,
+  easyRead,
+  tts,
+}
 
 class OverlayScreen extends StatefulWidget {
   const OverlayScreen({super.key});
@@ -33,14 +40,50 @@ class _OverlayScreenState extends State<OverlayScreen>
 
   // ── Animation ────────────────────────────────────────
   late AnimationController _bubbleController;
-  late AnimationController _pulseController;
 
   // ── Audio ────────────────────────────────────────────
   final AudioPlayer _audioPlayer = AudioPlayer();
   bool _isPlaying = false;
 
   // ── Backend URL ──────────────────────────────────────
-  static const String _baseUrl = 'http://10.0.2.2:8080';
+  List<String> get _baseUrls {
+    if (Platform.isAndroid) {
+      return const [
+        'http://10.0.2.2:8000',
+        'http://10.0.2.2:8001',
+      ];
+    }
+    return const [
+      'http://localhost:8000',
+      'http://127.0.0.1:8000',
+      'http://localhost:8001',
+      'http://127.0.0.1:8001',
+    ];
+  }
+
+  String get _baseUrl => _baseUrls.first;
+
+  Future<http.Response> _postToBackend(
+    String path,
+    Map<String, dynamic> payload,
+  ) async {
+    Object? lastError;
+    for (final baseUrl in _baseUrls) {
+      try {
+        final response = await http
+            .post(
+              Uri.parse('$baseUrl$path'),
+              headers: {'Content-Type': 'application/json'},
+              body: json.encode(payload),
+            )
+            .timeout(const Duration(seconds: 30));
+        return response;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? Exception('No backend URL could be reached');
+  }
 
   // ── Colors ───────────────────────────────────────────
   static const _purple = Color(0xFF7C4DFF);
@@ -54,26 +97,24 @@ class _OverlayScreenState extends State<OverlayScreen>
 
     _bubbleController = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 2),
-    )..repeat(reverse: true);
-
-    _pulseController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1200),
+      duration: const Duration(seconds: 3),
     )..repeat(reverse: true);
 
     // Listen for messages from the main app
-    FlutterOverlayWindow.overlayListener.listen((event) {
-      if (event == "close") {
-        FlutterOverlayWindow.closeOverlay();
-      }
-    });
+    try {
+      FlutterOverlayWindow.overlayListener.listen((event) {
+        if (event == "close") {
+          FlutterOverlayWindow.closeOverlay();
+        }
+      });
+    } catch (_) {
+      // Overlay listener not available
+    }
   }
 
   @override
   void dispose() {
     _bubbleController.dispose();
-    _pulseController.dispose();
     _audioPlayer.dispose();
     super.dispose();
   }
@@ -82,12 +123,11 @@ class _OverlayScreenState extends State<OverlayScreen>
   //  STATE TRANSITIONS
   // ══════════════════════════════════════════════════════
 
-  Future<void> _expandToMenu() async {
+  void _expandToMenu() {
     setState(() => _state = _OverlayState.actionMenu);
-    await FlutterOverlayWindow.resizeOverlay(350, 480, true);
   }
 
-  Future<void> _collapseToBubble() async {
+  void _collapseToBubble() {
     _audioPlayer.stop();
     setState(() {
       _state = _OverlayState.bubble;
@@ -97,16 +137,10 @@ class _OverlayScreenState extends State<OverlayScreen>
       _clipboardText = '';
       _isPlaying = false;
     });
-    await FlutterOverlayWindow.resizeOverlay(90, 90, true);
   }
 
-  Future<void> _expandToResult() async {
+  void _expandToResult() {
     setState(() => _state = _OverlayState.result);
-    await FlutterOverlayWindow.resizeOverlay(
-      WindowSize.matchParent,
-      WindowSize.matchParent,
-      true,
-    );
   }
 
   // ══════════════════════════════════════════════════════
@@ -147,16 +181,10 @@ class _OverlayScreenState extends State<OverlayScreen>
 
   Future<void> _sendToSimplify(String text) async {
     try {
-      final response = await http
-          .post(
-            Uri.parse('$_baseUrl/api/simplify'),
-            headers: {'Content-Type': 'application/json'},
-            body: json.encode({
-              'text': text,
-              'user_profile': 'adhd',
-            }),
-          )
-          .timeout(const Duration(seconds: 30));
+      final response = await _postToBackend('/api/simplify', {
+        'text': text,
+        'user_profile': 'ADHD',
+      });
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
@@ -189,7 +217,7 @@ class _OverlayScreenState extends State<OverlayScreen>
     } catch (e) {
       setState(() {
         _resultText =
-            '⚠️ Could not reach NeuroSpace backend.\nMake sure it\'s running at $_baseUrl';
+            '⚠️ Could not reach NeuroSpace backend.\nMake sure it\'s running on ${_baseUrls.join(' or ')}';
         _isLoading = false;
       });
     }
@@ -211,7 +239,7 @@ class _OverlayScreenState extends State<OverlayScreen>
             'This lets NeuroSpace read on-screen text to help you.';
         _isLoading = false;
       });
-      await _expandToResult();
+      _expandToResult();
       return;
     }
 
@@ -223,7 +251,7 @@ class _OverlayScreenState extends State<OverlayScreen>
             '📄 No content detected on screen.\n\nMake sure there is text visible in the app behind this overlay.';
         _isLoading = false;
       });
-      await _expandToResult();
+      _expandToResult();
       return;
     }
 
@@ -232,7 +260,7 @@ class _OverlayScreenState extends State<OverlayScreen>
       _clipboardText = screenText;
       _isLoading = true;
     });
-    await _expandToResult();
+    _expandToResult();
     await _sendToSimplify(screenText);
   }
 
@@ -249,7 +277,7 @@ class _OverlayScreenState extends State<OverlayScreen>
             '📋 No text on clipboard!\n\nHighlight and copy some text in any app, then tap Summarize again.';
         _isLoading = false;
       });
-      await _expandToResult();
+      _expandToResult();
       return;
     }
 
@@ -258,8 +286,75 @@ class _OverlayScreenState extends State<OverlayScreen>
       _clipboardText = text;
       _isLoading = true;
     });
-    await _expandToResult();
+    _expandToResult();
     await _sendToSimplify(text);
+  }
+
+  Future<void> _handleSimplifyClipboard() async {
+    final text = await _getClipboard();
+    if (text.isEmpty || text.length < 10) {
+      setState(() {
+        _activeAction = _ActionType.simplifyClipboard;
+        _resultText =
+            '📋 No text on clipboard!\n\nCopy some text, then tap Simplify again.';
+        _isLoading = false;
+      });
+      _expandToResult();
+      return;
+    }
+
+    setState(() {
+      _activeAction = _ActionType.simplifyClipboard;
+      _clipboardText = text;
+      _isLoading = true;
+    });
+    _expandToResult();
+    await _sendToSimplify(text);
+  }
+
+  Future<void> _handleEasyRead() async {
+    String text = await _getScreenText();
+    if (text.isEmpty || text.length < 10) {
+      text = await _getClipboard();
+    }
+
+    if (text.isEmpty || text.length < 10) {
+      setState(() {
+        _activeAction = _ActionType.easyRead;
+        _resultText =
+            '📋 No content available for Easy Read.\n\nTry copying text first.';
+        _isLoading = false;
+      });
+      _expandToResult();
+      return;
+    }
+
+    final normalized = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final sentences = normalized
+        .split(RegExp(r'(?<=[.!?])\s+'))
+        .where((s) => s.trim().isNotEmpty)
+        .toList();
+
+    final buffer = StringBuffer();
+    for (final sentence in sentences) {
+      if (sentence.length > 90) {
+        for (final part in sentence.split(RegExp(r',\s*'))) {
+          if (part.trim().isNotEmpty) {
+            buffer.writeln('• ${part.trim()}');
+          }
+        }
+      } else {
+        buffer.writeln('• ${sentence.trim()}');
+      }
+      buffer.writeln();
+    }
+
+    setState(() {
+      _activeAction = _ActionType.easyRead;
+      _resultText = buffer.toString().trim();
+      _isLoading = false;
+    });
+    _expandToResult();
   }
 
   // ══════════════════════════════════════════════════════
@@ -284,7 +379,7 @@ class _OverlayScreenState extends State<OverlayScreen>
             '📋 No content to read!\n\nEither enable the accessibility service to auto-detect screen text, or copy text to your clipboard.';
         _isLoading = false;
       });
-      await _expandToResult();
+      _expandToResult();
       return;
     }
 
@@ -293,19 +388,13 @@ class _OverlayScreenState extends State<OverlayScreen>
       _clipboardText = text;
       _isLoading = true;
     });
-    await _expandToResult();
+    _expandToResult();
 
     try {
-      final response = await http
-          .post(
-            Uri.parse('$_baseUrl/api/text-to-speech'),
-            headers: {'Content-Type': 'application/json'},
-            body: json.encode({
-              'text': text,
-              'speed': 1.0,
-            }),
-          )
-          .timeout(const Duration(seconds: 30));
+      final response = await _postToBackend('/api/text-to-speech', {
+        'text': text,
+        'speed': 1.0,
+      });
 
       if (response.statusCode == 200) {
         final dir = await getTemporaryDirectory();
@@ -331,7 +420,7 @@ class _OverlayScreenState extends State<OverlayScreen>
     } catch (e) {
       setState(() {
         _resultText =
-            '⚠️ Could not reach backend for TTS.\nMake sure it\'s running at $_baseUrl';
+            '⚠️ Could not reach backend for TTS.\nMake sure it\'s running on ${_baseUrls.join(' or ')}';
         _isLoading = false;
       });
     }
@@ -363,194 +452,141 @@ class _OverlayScreenState extends State<OverlayScreen>
   Widget build(BuildContext context) {
     return Material(
       color: Colors.transparent,
-      child: switch (_state) {
-        _OverlayState.bubble => _buildBubble(),
-        _OverlayState.actionMenu => _buildActionMenu(),
-        _OverlayState.result => _buildResultView(),
-      },
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 200),
+        child: switch (_state) {
+          _OverlayState.bubble => _buildBubble(),
+          _OverlayState.actionMenu => _buildActionMenu(),
+          _OverlayState.result => _buildResultView(),
+        },
+      ),
     );
   }
 
   // ─────────────────────────────────────────────────────
-  //  BUBBLE (small floating icon — anchored to right side)
+  //  BUBBLE — small icon pinned to right edge
   // ─────────────────────────────────────────────────────
 
   Widget _buildBubble() {
-    return GestureDetector(
-      onTap: _expandToMenu,
-      child: Align(
-        alignment: Alignment.centerRight,
-        child: AnimatedBuilder(
-          animation: _bubbleController,
-          builder: (context, child) {
-            final bounce =
-                math.sin(_bubbleController.value * 2 * math.pi) * 4;
-            final pulseScale =
-                1.0 + (_pulseController.value * 0.05);
-            return Transform.translate(
-              offset: Offset(0, bounce),
-              child: Transform.scale(
-                scale: pulseScale,
-                child: Container(
-                  width: 60,
-                  height: 60,
-                  margin: const EdgeInsets.only(right: 6),
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: const LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [_purple, _cyan],
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: _purple.withValues(alpha: 0.45),
-                        blurRadius: 16,
-                        spreadRadius: 1,
-                      ),
-                      BoxShadow(
-                        color: _cyan.withValues(alpha: 0.2),
-                        blurRadius: 10,
-                        offset: const Offset(2, 2),
-                      ),
-                    ],
-                    border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.4),
-                      width: 2,
-                    ),
-                  ),
-                  child: const Icon(
-                    Icons.psychology_rounded,
-                    color: Colors.white,
-                    size: 30,
-                  ),
-                ),
+    return Align(
+      key: const ValueKey('bubble'),
+      alignment: Alignment.centerRight,
+      child: GestureDetector(
+        onTap: _expandToMenu,
+        child: Container(
+          width: 58,
+          height: 58,
+          margin: const EdgeInsets.only(right: 4),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [_purple, _cyan],
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: _purple.withValues(alpha: 0.4),
+                blurRadius: 12,
+                spreadRadius: 1,
               ),
-            );
-          },
+            ],
+            border: Border.all(
+              color: Colors.white.withValues(alpha: 0.45),
+              width: 2,
+            ),
+          ),
+          child: const Center(
+            child: Icon(
+              Icons.psychology_rounded,
+              color: Colors.white,
+              size: 28,
+            ),
+          ),
         ),
       ),
     );
   }
 
   // ─────────────────────────────────────────────────────
-  //  ACTION MENU (4 option cards)
+  //  ACTION MENU
   // ─────────────────────────────────────────────────────
 
   Widget _buildActionMenu() {
-    return Center(
+    return GestureDetector(
+      key: const ValueKey('menu'),
+      onTap: _collapseToBubble,
       child: Container(
-        width: 320,
-        padding: const EdgeInsets.all(18),
-        decoration: BoxDecoration(
-          color: _darkBg,
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: _purple.withValues(alpha: 0.3), width: 1.5),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.65),
-              blurRadius: 30,
-              spreadRadius: 5,
-            ),
-            BoxShadow(
-              color: _purple.withValues(alpha: 0.08),
-              blurRadius: 40,
-              spreadRadius: -5,
-            ),
-          ],
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Header
-            Row(
-              children: [
-                Container(
-                  width: 30,
-                  height: 30,
-                  decoration: const BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: LinearGradient(colors: [_purple, _cyan]),
-                  ),
-                  child: const Icon(Icons.psychology_rounded,
-                      color: Colors.white, size: 16),
+        color: Colors.black.withValues(alpha: 0.4),
+        child: SafeArea(
+          child: Center(
+            child: GestureDetector(
+              onTap: () {},
+              child: Container(
+                width: 300,
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.of(context).size.height * 0.7,
                 ),
-                const SizedBox(width: 10),
-                const Text(
-                  'NeuroSpace',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w800,
-                    color: Colors.white,
-                    letterSpacing: 0.3,
-                  ),
-                ),
-                const Spacer(),
-                GestureDetector(
-                  onTap: _collapseToBubble,
-                  child: Container(
-                    width: 28,
-                    height: 28,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.08),
-                      borderRadius: BorderRadius.circular(8),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: _darkBg,
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(color: _purple.withValues(alpha: 0.25), width: 1.5),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.5),
+                      blurRadius: 20,
+                      spreadRadius: 2,
                     ),
-                    child: const Icon(Icons.close_rounded,
-                        color: Colors.white54, size: 16),
+                  ],
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            width: 28, height: 28,
+                            decoration: const BoxDecoration(
+                              shape: BoxShape.circle,
+                              gradient: LinearGradient(colors: [_purple, _cyan]),
+                            ),
+                            child: const Icon(Icons.psychology_rounded, color: Colors.white, size: 15),
+                          ),
+                          const SizedBox(width: 10),
+                          const Text('NeuroSpace', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Colors.white)),
+                          const Spacer(),
+                          GestureDetector(
+                            onTap: _collapseToBubble,
+                            child: Container(
+                              width: 26, height: 26,
+                              decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.08), borderRadius: BorderRadius.circular(8)),
+                              child: const Icon(Icons.close_rounded, color: Colors.white54, size: 15),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text('Tap an action below', style: TextStyle(fontSize: 10.5, color: Colors.white.withValues(alpha: 0.35))),
+                      const SizedBox(height: 12),
+                      _ActionButton(icon: Icons.article_rounded, label: 'Explain Screen', subtitle: 'Summarize visible content', gradient: const [Color(0xFF7C4DFF), Color(0xFF651FFF)], onTap: _handleSummarizePage),
+                      const SizedBox(height: 6),
+                      _ActionButton(icon: Icons.text_fields_rounded, label: 'Simplify Clipboard', subtitle: 'Rewrite in easy words', gradient: const [Color(0xFF5E35B1), Color(0xFF4527A0)], onTap: _handleSimplifyClipboard),
+                      const SizedBox(height: 6),
+                      _ActionButton(icon: Icons.content_paste_rounded, label: 'Summarize Clipboard', subtitle: 'Short summary', gradient: const [Color(0xFF448AFF), Color(0xFF2962FF)], onTap: _handleSummarizeClipboard),
+                      const SizedBox(height: 6),
+                      _ActionButton(icon: Icons.format_size_rounded, label: 'Easy Read', subtitle: 'Digestible bullets', gradient: const [Color(0xFF4CAF50), Color(0xFF2E7D32)], onTap: _handleEasyRead),
+                      const SizedBox(height: 6),
+                      _ActionButton(icon: Icons.volume_up_rounded, label: 'Read Aloud', subtitle: 'Listen to text', gradient: const [Color(0xFF00BCD4), Color(0xFF0097A7)], onTap: _handleTTS),
+                      const SizedBox(height: 6),
+                      _ActionButton(icon: Icons.camera_alt_rounded, label: 'Scan / Open', subtitle: 'OCR + reader', gradient: const [Color(0xFFFF7043), Color(0xFFE64A19)], onTap: _handleOpenInApp),
+                    ],
                   ),
                 ),
-              ],
-            ),
-            const SizedBox(height: 5),
-            Text(
-              'Tap an action to process this page',
-              style: TextStyle(
-                fontSize: 11,
-                color: Colors.white.withValues(alpha: 0.4),
-                fontWeight: FontWeight.w500,
               ),
             ),
-            const SizedBox(height: 14),
-
-            // ── ACTION 1: Summarize Page (uses AccessibilityService) ──
-            _ActionButton(
-              icon: Icons.article_rounded,
-              label: 'Summarize Page',
-              subtitle: 'Simplify current screen content',
-              gradient: const [Color(0xFF7C4DFF), Color(0xFF651FFF)],
-              onTap: _handleSummarizePage,
-            ),
-            const SizedBox(height: 8),
-
-            // ── ACTION 2: Summarize Clipboard ──
-            _ActionButton(
-              icon: Icons.content_paste_rounded,
-              label: 'Summarize Copied Text',
-              subtitle: 'Simplify text from clipboard',
-              gradient: const [Color(0xFF448AFF), Color(0xFF2962FF)],
-              onTap: _handleSummarizeClipboard,
-            ),
-            const SizedBox(height: 8),
-
-            // ── ACTION 3: Read Aloud ──
-            _ActionButton(
-              icon: Icons.volume_up_rounded,
-              label: 'Read Aloud',
-              subtitle: 'Listen to page or copied text',
-              gradient: const [Color(0xFF00BCD4), Color(0xFF0097A7)],
-              onTap: _handleTTS,
-            ),
-            const SizedBox(height: 8),
-
-            // ── ACTION 4: Open in NeuroSpace ──
-            _ActionButton(
-              icon: Icons.open_in_new_rounded,
-              label: 'Open in NeuroSpace',
-              subtitle: 'Read with full accessibility tools',
-              gradient: const [Color(0xFFFF7043), Color(0xFFE64A19)],
-              onTap: _handleOpenInApp,
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -563,12 +599,24 @@ class _OverlayScreenState extends State<OverlayScreen>
   Widget _buildResultView() {
     final isTTS = _activeAction == _ActionType.tts;
     final isPageSummary = _activeAction == _ActionType.summarizePage;
+    final isSimplify = _activeAction == _ActionType.simplifyClipboard;
+    final isEasyRead = _activeAction == _ActionType.easyRead;
     final title = isTTS
         ? '🔊 Read Aloud'
         : isPageSummary
             ? '📄 Page Summary'
+        : isSimplify
+          ? '✨ Simplified Text'
+          : isEasyRead
+            ? '🔤 Easy Read'
             : '🧠 Text Summary';
-    final accentColor = isTTS ? _cyan : _purple;
+    final accentColor = isTTS
+      ? _cyan
+      : isEasyRead
+        ? const Color(0xFF4CAF50)
+        : isSimplify
+          ? const Color(0xFF5E35B1)
+          : _purple;
 
     return Container(
       margin: const EdgeInsets.only(top: 80, left: 16, right: 16, bottom: 40),
@@ -602,6 +650,10 @@ class _OverlayScreenState extends State<OverlayScreen>
                       ? Icons.volume_up_rounded
                       : isPageSummary
                           ? Icons.article_rounded
+                        : isSimplify
+                          ? Icons.text_fields_rounded
+                          : isEasyRead
+                            ? Icons.format_size_rounded
                           : Icons.auto_awesome_rounded,
                   color: accentColor,
                   size: 22,
@@ -736,6 +788,8 @@ class _OverlayScreenState extends State<OverlayScreen>
                               ? 'Generating audio...'
                               : isPageSummary
                                   ? 'Reading & simplifying page...'
+                                : isSimplify
+                                  ? 'Simplifying copied text...'
                                   : 'Simplifying text...',
                           style: TextStyle(
                             fontSize: 14,
@@ -779,7 +833,7 @@ class _OverlayScreenState extends State<OverlayScreen>
             children: [
               Expanded(
                 child: GestureDetector(
-                  onTap: () async {
+                  onTap: () {
                     _audioPlayer.stop();
                     setState(() {
                       _state = _OverlayState.actionMenu;
@@ -788,7 +842,6 @@ class _OverlayScreenState extends State<OverlayScreen>
                       _resultText = '';
                       _isPlaying = false;
                     });
-                    await FlutterOverlayWindow.resizeOverlay(350, 480, true);
                   },
                   child: Container(
                     padding: const EdgeInsets.symmetric(vertical: 14),

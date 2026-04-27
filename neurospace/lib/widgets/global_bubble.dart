@@ -6,6 +6,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:speech_to_text/speech_to_text.dart';
 import '../providers/bubble_provider.dart';
 import '../providers/neuro_theme_provider.dart';
 import '../screens/scan_result_screen.dart';
@@ -24,6 +25,8 @@ class _GlobalAccessibilityBubbleState extends State<GlobalAccessibilityBubble>
   late AnimationController _pulseController;
   late AnimationController _expandController;
   late Animation<double> _expandAnimation;
+  final SpeechToText _speech = SpeechToText();
+  bool _isListening = false;
 
   @override
   void initState() {
@@ -220,7 +223,7 @@ class _GlobalAccessibilityBubbleState extends State<GlobalAccessibilityBubble>
             ),
             const SizedBox(height: 4),
             Text(
-              'Copy text → pick an action',
+              'Screen text, clipboard, OCR, or voice',
               style: TextStyle(
                 fontSize: 11,
                 color: Colors.white.withOpacity(0.4),
@@ -233,7 +236,7 @@ class _GlobalAccessibilityBubbleState extends State<GlobalAccessibilityBubble>
             _BubbleActionButton(
               icon: Icons.volume_up_rounded,
               label: 'Read Aloud',
-              subtitle: 'Listen to copied text',
+              subtitle: 'Read visible text or clipboard',
               gradient: const [Color(0xFF00BCD4), Color(0xFF0097A7)],
               onTap: () => bubble.handleTTS(
                 speechRate: profile.ttsSpeed * 0.5,
@@ -241,7 +244,19 @@ class _GlobalAccessibilityBubbleState extends State<GlobalAccessibilityBubble>
             ),
             const SizedBox(height: 8),
 
-            // ── ACTION 2: Summarize ──
+            // ── ACTION 2: Simplify ──
+            _BubbleActionButton(
+              icon: Icons.text_fields_rounded,
+              label: 'Simplify',
+              subtitle: 'Convert into easier language',
+              gradient: const [Color(0xFF5E35B1), Color(0xFF4527A0)],
+              onTap: () => bubble.handleSimplify(
+                profile: profile.profileType.name,
+              ),
+            ),
+            const SizedBox(height: 8),
+
+            // ── ACTION 3: Summarize ──
             _BubbleActionButton(
               icon: Icons.auto_awesome_rounded,
               label: 'Summarize',
@@ -253,7 +268,7 @@ class _GlobalAccessibilityBubbleState extends State<GlobalAccessibilityBubble>
             ),
             const SizedBox(height: 8),
 
-            // ── ACTION 3: Easy Read ──
+            // ── ACTION 4: Easy Read ──
             _BubbleActionButton(
               icon: Icons.format_size_rounded,
               label: 'Easy Read',
@@ -263,7 +278,17 @@ class _GlobalAccessibilityBubbleState extends State<GlobalAccessibilityBubble>
             ),
             const SizedBox(height: 8),
 
-            // ── ACTION 4: Scan Text ──
+            // ── ACTION 5: Voice Command ──
+            _BubbleActionButton(
+              icon: _isListening ? Icons.mic_off_rounded : Icons.mic_rounded,
+              label: _isListening ? 'Listening...' : 'Voice Command',
+              subtitle: 'Say: read this / simplify this / summarize this',
+              gradient: const [Color(0xFF26A69A), Color(0xFF00796B)],
+              onTap: () => _handleVoiceCommandFromBubble(bubble),
+            ),
+            const SizedBox(height: 8),
+
+            // ── ACTION 6: Scan Text ──
             _BubbleActionButton(
               icon: Icons.camera_alt_rounded,
               label: 'Scan Text',
@@ -290,17 +315,21 @@ class _GlobalAccessibilityBubbleState extends State<GlobalAccessibilityBubble>
 
     final title = switch (bubble.currentAction) {
       BubbleAction.tts => '🔊 Read Aloud',
+      BubbleAction.simplify => '✨ Simplify',
       BubbleAction.summarize => '📝 Summary',
       BubbleAction.easyRead => '🔤 Easy Read',
       BubbleAction.scan => '📸 Scan Result',
+      BubbleAction.voice => '🎤 Voice Command',
       _ => 'Result',
     };
 
     final accentColor = switch (bubble.currentAction) {
       BubbleAction.tts => const Color(0xFF00BCD4),
+      BubbleAction.simplify => const Color(0xFF5E35B1),
       BubbleAction.summarize => const Color(0xFF7C4DFF),
       BubbleAction.easyRead => const Color(0xFF4CAF50),
       BubbleAction.scan => const Color(0xFFFF7043),
+      BubbleAction.voice => const Color(0xFF26A69A),
       _ => const Color(0xFF7C4DFF),
     };
 
@@ -352,6 +381,10 @@ class _GlobalAccessibilityBubbleState extends State<GlobalAccessibilityBubble>
                         ? Icons.volume_up_rounded
                         : bubble.currentAction == BubbleAction.summarize
                             ? Icons.auto_awesome_rounded
+                          : bubble.currentAction == BubbleAction.simplify
+                            ? Icons.text_fields_rounded
+                            : bubble.currentAction == BubbleAction.voice
+                              ? Icons.mic_rounded
                             : isEasyRead
                                 ? Icons.format_size_rounded
                                 : Icons.camera_alt_rounded,
@@ -414,8 +447,9 @@ class _GlobalAccessibilityBubbleState extends State<GlobalAccessibilityBubble>
                       ),
                       const SizedBox(height: 12),
                       Text(
-                        bubble.currentAction == BubbleAction.summarize
-                            ? 'Simplifying text...'
+                        bubble.currentAction == BubbleAction.summarize ||
+                                bubble.currentAction == BubbleAction.simplify
+                            ? 'Processing text...'
                             : 'Processing...',
                         style: TextStyle(
                           fontSize: 13,
@@ -555,6 +589,55 @@ class _GlobalAccessibilityBubbleState extends State<GlobalAccessibilityBubble>
     );
   }
 
+  Future<void> _handleVoiceCommandFromBubble(BubbleProvider bubble) async {
+    if (_isListening) {
+      await _speech.stop();
+      if (mounted) {
+        setState(() => _isListening = false);
+      }
+      return;
+    }
+
+    final available = await _speech.initialize(
+      onError: (_) {
+        if (mounted) setState(() => _isListening = false);
+      },
+      onStatus: (status) {
+        if (status == 'done' && mounted) {
+          setState(() => _isListening = false);
+        }
+      },
+    );
+
+    if (!available) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Microphone access unavailable for voice command.')),
+      );
+      return;
+    }
+
+    if (mounted) setState(() => _isListening = true);
+
+    await _speech.listen(
+      listenMode: ListenMode.confirmation,
+      partialResults: false,
+      onResult: (result) async {
+        if (!result.finalResult) return;
+        final recognized = result.recognizedWords.trim();
+        if (recognized.isEmpty) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('No command heard. Try again.')),
+            );
+          }
+          return;
+        }
+        await bubble.handleVoiceCommand(recognized);
+      },
+    );
+  }
+
   // ─────────────────────────────────────────────
   //  TTS PLAYBACK CONTROLS
   // ─────────────────────────────────────────────
@@ -648,10 +731,6 @@ class _GlobalAccessibilityBubbleState extends State<GlobalAccessibilityBubble>
     final profile =
         Provider.of<NeuroThemeProvider>(context, listen: false).activeProfile;
     final profileStr = profile.profileType.name.toUpperCase();
-
-    // Show processing state
-    bubble.expand();
-    bubble.handleSummarize(text: 'Scanning image...');
 
     final result = await ApiService.scanImage(
       pickedFile.path,

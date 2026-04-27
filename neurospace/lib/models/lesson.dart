@@ -17,15 +17,32 @@ class LessonModule {
   });
 
   factory LessonModule.fromJson(Map<String, dynamic> json) {
+    final sectionsJson = json['sections'] as List?;
+    final unifiedContent = (json['content'] ?? '').toString();
+    final unifiedType = (json['section_type'] ?? json['type'] ?? 'explanation').toString();
+
+    // Support both legacy module schema (with sections[]) and unified schema
+    // where each module item itself is a single text block.
+    final resolvedSections = sectionsJson != null
+        ? sectionsJson
+            .map((e) => ModuleSection.fromJson(Map<String, dynamic>.from(e as Map)))
+            .toList()
+        : (unifiedContent.trim().isNotEmpty
+            ? [
+                ModuleSection(
+                  heading: (json['title'] ?? '').toString(),
+                  text: unifiedContent,
+                  type: unifiedType,
+                ),
+              ]
+            : <ModuleSection>[]);
+
     return LessonModule(
       title: json['title'] ?? '',
       description: json['description'] ?? '',
-      sections: (json['sections'] as List?)
-              ?.map((e) => ModuleSection.fromJson(e))
-              .toList() ??
-          [],
+      sections: resolvedSections,
       flashcard: json['flashcard'] != null
-          ? Flashcard.fromJson(json['flashcard'])
+          ? Flashcard.fromJson(Map<String, dynamic>.from(json['flashcard'] as Map))
           : null,
     );
   }
@@ -155,9 +172,12 @@ class DeepDiveLesson {
 
   factory DeepDiveLesson.fromJson(Map<String, dynamic> json) {
     // Parse interactive section
-    final interactive = json['interactive'] as Map<String, dynamic>?;
+    final interactiveRaw = json['interactive'];
+    final interactive = interactiveRaw is Map
+      ? Map<String, dynamic>.from(interactiveRaw)
+      : null;
     final quizList = (interactive?['quiz'] as List?)
-            ?.map((e) => QuizQuestion.fromJson(e))
+        ?.map((e) => QuizQuestion.fromJson(Map<String, dynamic>.from(e as Map)))
             .toList() ??
         [];
     final questionsList = (interactive?['questions'] as List?)
@@ -169,7 +189,7 @@ class DeepDiveLesson {
       topic: json['topic'] ?? json['title'] ?? '',
       targetProfile: json['target_profile'] ?? 'custom',
       modules: (json['modules'] as List?)
-              ?.map((e) => LessonModule.fromJson(e))
+              ?.map((e) => LessonModule.fromJson(Map<String, dynamic>.from(e as Map)))
               .toList() ??
           [],
       keyPoints: (json['key_points'] as List?)
@@ -177,13 +197,15 @@ class DeepDiveLesson {
               .toList() ??
           [],
       wikipediaLinks: (json['wikipedia_links'] as List?)
-              ?.map((e) => WikiLink.fromJson(e))
+              ?.map((e) => WikiLink.fromJson(Map<String, dynamic>.from(e as Map)))
               .toList() ??
           [],
       quizQuestions: quizList,
       thinkingQuestions: questionsList,
       accessibility: json['accessibility'] != null
-          ? LessonAccessibility.fromJson(json['accessibility'])
+          ? LessonAccessibility.fromJson(
+              Map<String, dynamic>.from(json['accessibility'] as Map),
+            )
           : null,
       ttsText: json['tts_text'],
     );

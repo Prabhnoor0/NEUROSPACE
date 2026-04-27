@@ -64,6 +64,15 @@ async def simplify_text(request: SimplifyRequest):
         )
 
 
+@router.post("/summarize", response_model=SimplifyResponse)
+async def summarize_text(request: SimplifyRequest):
+    """
+    Dedicated summarize endpoint for assistant quick actions.
+    Currently uses same adaptive simplify pipeline for concise output.
+    """
+    return await simplify_text(request)
+
+
 # ============================================
 # Analyze Image (Snap-to-Understand)
 # ============================================

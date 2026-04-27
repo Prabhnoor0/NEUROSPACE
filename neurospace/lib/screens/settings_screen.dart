@@ -4,10 +4,14 @@
 /// focus mode, reduce motion, high contrast, and TTS speed.
 /// All changes apply live via NeuroThemeProvider.
 
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../providers/neuro_theme_provider.dart';
 import '../models/neuro_profile.dart';
+import '../services/android_assistant_bridge.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -27,6 +31,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late bool _highContrast;
   late bool _darkMode;
   late int _accentColorIndex;
+  late String _language;
+  late String _simplificationLevel;
+  final TextEditingController _emergencyContactController =
+      TextEditingController();
+
+  // Cached overlay states (Android only)
+  bool _overlayPermissionGranted = false;
+  bool _accessibilityEnabled = false;
+  bool _overlayActive = false;
 
   // Accent color palette
   static const List<Color> _accentColors = [
@@ -40,6 +53,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
     Color(0xFF26C6DA), // Teal
     Color(0xFFFFD54F), // Amber
     Color(0xFF42A5F5), // Light Blue
+  ];
+
+  static const List<String> _languageOptions = [
+    'English',
+    'Hindi',
+    'Punjabi',
+  ];
+
+  static const List<String> _simplificationOptions = [
+    'Simple',
+    'Very Simple',
+    'Child Friendly',
+    'Exam Friendly',
+    'Bullet Summary',
   ];
 
   @override
@@ -57,6 +84,59 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _highContrast = profile.contrastMode == ContrastMode.high;
     _darkMode = _isDarkBackground(profile.backgroundColor);
     _accentColorIndex = _findClosestColor(profile.accentColor);
+    _language = 'English';
+    _simplificationLevel = 'Simple';
+
+    _loadExtraPreferences();
+    _refreshOverlayStates();
+  }
+
+  @override
+  void dispose() {
+    _emergencyContactController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadExtraPreferences() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+
+    setState(() {
+      _reduceMotion = prefs.getBool('reduce_motion') ?? _reduceMotion;
+      _language = prefs.getString('preferred_language') ?? _language;
+      _simplificationLevel =
+          prefs.getString('simplification_level') ?? _simplificationLevel;
+      _emergencyContactController.text =
+          prefs.getString('emergency_contact') ?? '';
+    });
+  }
+
+  Future<void> _saveExtraPreferences() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('reduce_motion', _reduceMotion);
+    await prefs.setString('preferred_language', _language);
+    await prefs.setString('simplification_level', _simplificationLevel);
+    await prefs.setString(
+      'emergency_contact',
+      _emergencyContactController.text.trim(),
+    );
+  }
+
+  /// Refresh overlay permission + active states (Android only)
+  Future<void> _refreshOverlayStates() async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    try {
+      final perm = await AndroidAssistantBridge.isOverlayPermissionGranted();
+      final acc = await AndroidAssistantBridge.isAccessibilityServiceEnabled();
+      final active = await AndroidAssistantBridge.isOverlayActive();
+      if (mounted) {
+        setState(() {
+          _overlayPermissionGranted = perm;
+          _accessibilityEnabled = acc;
+          _overlayActive = active;
+        });
+      }
+    } catch (_) {}
   }
 
   bool _isDarkBackground(Color c) {
@@ -135,9 +215,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
         elevation: 0,
         iconTheme: IconThemeData(color: profile.textColor),
       ),
-      body: ListView(
+      body: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
-        children: [
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
           // ──── Profile Info ────
           _buildSectionHeader('Current Profile', Icons.person_rounded, profile),
           const SizedBox(height: 8),
@@ -469,7 +551,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           _buildToggleCard(
             profile: profile,
-            title: 'Focus Borders',
+            title: 'Focus Mode',
             subtitle: 'Show colored borders around interactive elements',
             icon: Icons.center_focus_strong_rounded,
             value: _focusMode,
@@ -485,7 +567,264 @@ class _SettingsScreenState extends State<SettingsScreen> {
             subtitle: 'Disable animations and transitions',
             icon: Icons.animation_rounded,
             value: _reduceMotion,
-            onChanged: (val) => setState(() => _reduceMotion = val),
+            onChanged: (val) {
+              setState(() => _reduceMotion = val);
+              _saveExtraPreferences();
+            },
+          ),
+
+          const SizedBox(height: 32),
+
+          // ════════════════════════════════════════
+          //  FLOATING ASSISTANT (Android only)
+          // ════════════════════════════════════════
+          if (!kIsWeb && Platform.isAndroid) ...[
+            _buildSectionHeader(
+                'Floating Assistant', Icons.bubble_chart_rounded, profile),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: profile.accentColor.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Text(
+                'The floating bubble appears on top of other apps so you can simplify, read, or summarize text from anywhere.',
+                style: TextStyle(
+                  fontFamily: profile.fontFamily,
+                  fontSize: 12,
+                  color: profile.textColor.withValues(alpha: 0.55),
+                  height: 1.5,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            // Overlay permission row
+            _buildPermissionRow(
+              profile: profile,
+              title: 'Draw over other apps',
+              ok: _overlayPermissionGranted,
+              onTap: () async {
+                await AndroidAssistantBridge.requestOverlayPermission();
+                await Future.delayed(const Duration(seconds: 1));
+                _refreshOverlayStates();
+              },
+            ),
+            const SizedBox(height: 8),
+
+            // Accessibility service row
+            _buildPermissionRow(
+              profile: profile,
+              title: 'Accessibility service',
+              ok: _accessibilityEnabled,
+              onTap: () async {
+                await AndroidAssistantBridge.openAccessibilitySettings();
+                await Future.delayed(const Duration(seconds: 1));
+                _refreshOverlayStates();
+              },
+            ),
+            const SizedBox(height: 12),
+
+            // Start / Stop Overlay toggle
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: profile.cardColor,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: profile.accentColor.withValues(alpha: 0.1),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: profile.accentColor.withValues(
+                          alpha: _overlayActive ? 0.15 : 0.06),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(
+                      Icons.bubble_chart_rounded,
+                      color: _overlayActive
+                          ? profile.accentColor
+                          : profile.textColor.withValues(alpha: 0.3),
+                      size: 20,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Floating Bubble',
+                          style: TextStyle(
+                            fontFamily: profile.fontFamily,
+                            fontSize: profile.fontSize - 1,
+                            fontWeight: FontWeight.w600,
+                            color: profile.textColor,
+                          ),
+                        ),
+                        Text(
+                          _overlayActive ? 'Active — visible on screen' : 'Tap to start the overlay',
+                          style: TextStyle(
+                            fontFamily: profile.fontFamily,
+                            fontSize: 12,
+                            color: profile.textColor.withValues(alpha: 0.45),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Switch.adaptive(
+                    value: _overlayActive,
+                    onChanged: (val) async {
+                      if (val) {
+                        final started = await AndroidAssistantBridge.startOverlay();
+                        if (!started && mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Grant "Draw over other apps" permission first.'),
+                            ),
+                          );
+                        }
+                      } else {
+                        await AndroidAssistantBridge.stopOverlay();
+                      }
+                      await Future.delayed(const Duration(milliseconds: 300));
+                      _refreshOverlayStates();
+                    },
+                    activeColor: profile.accentColor,
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 32),
+          ],
+
+          // ════════════════════════════════════════
+          //  EXPERIENCE
+          // ════════════════════════════════════════
+          _buildSectionHeader(
+              'Experience', Icons.tune_rounded, profile),
+          const SizedBox(height: 12),
+
+          _buildSettingCard(
+            profile: profile,
+            title: 'Language',
+            subtitle: _language,
+            child: DropdownButtonFormField<String>(
+              value: _language,
+              decoration: const InputDecoration(border: InputBorder.none),
+              dropdownColor: profile.cardColor,
+              items: _languageOptions
+                  .map(
+                    (lang) => DropdownMenuItem(
+                      value: lang,
+                      child: Text(
+                        lang,
+                        style: TextStyle(
+                          fontFamily: profile.fontFamily,
+                          color: profile.textColor,
+                        ),
+                      ),
+                    ),
+                  )
+                  .toList(),
+              onChanged: (value) {
+                if (value == null) return;
+                setState(() => _language = value);
+                _saveExtraPreferences();
+              },
+            ),
+          ),
+
+          const SizedBox(height: 12),
+
+          _buildSettingCard(
+            profile: profile,
+            title: 'Simplification Level',
+            subtitle: _simplificationLevel,
+            child: DropdownButtonFormField<String>(
+              value: _simplificationLevel,
+              decoration: const InputDecoration(border: InputBorder.none),
+              dropdownColor: profile.cardColor,
+              items: _simplificationOptions
+                  .map(
+                    (level) => DropdownMenuItem(
+                      value: level,
+                      child: Text(
+                        level,
+                        style: TextStyle(
+                          fontFamily: profile.fontFamily,
+                          color: profile.textColor,
+                        ),
+                      ),
+                    ),
+                  )
+                  .toList(),
+              onChanged: (value) {
+                if (value == null) return;
+                setState(() => _simplificationLevel = value);
+                _saveExtraPreferences();
+              },
+            ),
+          ),
+
+          const SizedBox(height: 12),
+
+          _buildSettingCard(
+            profile: profile,
+            title: 'Emergency Contact',
+            subtitle: 'Used by Quick Help actions',
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _emergencyContactController,
+                    keyboardType: TextInputType.phone,
+                    style: TextStyle(
+                      fontFamily: profile.fontFamily,
+                      color: profile.textColor,
+                    ),
+                    decoration: InputDecoration(
+                      hintText: 'e.g. +91XXXXXXXXXX',
+                      hintStyle: TextStyle(
+                        fontFamily: profile.fontFamily,
+                        color: profile.textColor.withValues(alpha: 0.4),
+                      ),
+                      filled: true,
+                      fillColor: profile.backgroundColor.withValues(alpha: 0.45),
+                      contentPadding:
+                          const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: profile.accentColor,
+                    foregroundColor: Colors.white,
+                  ),
+                  onPressed: () async {
+                    await _saveExtraPreferences();
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Emergency contact saved.')),
+                    );
+                  },
+                  child: const Text('Save'),
+                ),
+              ],
+            ),
           ),
 
           const SizedBox(height: 32),
@@ -609,7 +948,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     _isDarkBackground(resetProfile.backgroundColor);
                 _accentColorIndex =
                     _findClosestColor(resetProfile.accentColor);
+                _reduceMotion = false;
+                _language = 'English';
+                _simplificationLevel = 'Simple';
               });
+                _saveExtraPreferences();
             },
             child: Container(
               width: double.infinity,
@@ -681,7 +1024,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ),
           ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -830,6 +1174,53 @@ class _SettingsScreenState extends State<SettingsScreen> {
             activeColor: profile.accentColor,
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildPermissionRow({
+    required NeuroProfile profile,
+    required String title,
+    required bool ok,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: profile.cardColor,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: profile.accentColor.withValues(alpha: 0.15)),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              ok ? Icons.check_circle_rounded : Icons.radio_button_unchecked,
+              color: ok ? const Color(0xFF4CAF50) : profile.textColor.withValues(alpha: 0.5),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                title,
+                style: TextStyle(
+                  fontFamily: profile.fontFamily,
+                  fontSize: profile.fontSize - 1,
+                  color: profile.textColor,
+                ),
+              ),
+            ),
+            Text(
+              ok ? 'Enabled' : 'Enable',
+              style: TextStyle(
+                fontFamily: profile.fontFamily,
+                fontWeight: FontWeight.w700,
+                color: ok ? const Color(0xFF4CAF50) : profile.accentColor,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

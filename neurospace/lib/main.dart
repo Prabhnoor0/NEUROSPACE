@@ -1,5 +1,6 @@
 import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:provider/provider.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
@@ -25,23 +26,29 @@ void overlayMain() {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  bool firebaseReady = false;
 
   // Initialize Firebase with generated config
   try {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     ).timeout(const Duration(seconds: 5));
+    firebaseReady = true;
   } catch (e) {
     // App already initialized or timed out — continue anyway
     debugPrint('Firebase init: $e');
   }
 
   // Sign in anonymously (creates a persistent user ID) - don't block app startup
-  try {
-    await FirebaseService.ensureAuthenticated()
-        .timeout(const Duration(seconds: 5));
-  } catch (e) {
-    debugPrint('Firebase auth: $e');
+  if (firebaseReady) {
+    try {
+      await FirebaseService.ensureAuthenticated()
+          .timeout(const Duration(seconds: 5));
+    } catch (e) {
+      debugPrint('Firebase auth: $e');
+    }
+  } else {
+    debugPrint('Firebase auth skipped: Firebase not initialized for this platform.');
   }
 
   runApp(const NeuroSpaceApp());
@@ -105,7 +112,7 @@ class _AppShellState extends State<_AppShell> {
   void initState() {
     super.initState();
     // Listen for data shared from the overlay (Android only)
-    if (Platform.isAndroid) {
+    if (!kIsWeb && Platform.isAndroid) {
       try {
         FlutterOverlayWindow.overlayListener.listen((event) {
           if (event is String && event.startsWith('open_reader:')) {

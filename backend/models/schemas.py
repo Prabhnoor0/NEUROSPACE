@@ -18,6 +18,20 @@ class NeuroProfileType(str, Enum):
     AUTISM = "Autism"
     CUSTOM = "Custom"
 
+    @classmethod
+    def _missing_(cls, value):
+        """Allow case-insensitive and separator-insensitive profile values."""
+        if isinstance(value, str):
+            normalized = value.strip().lower().replace("_", "").replace("-", "").replace(" ", "")
+            mapping = {
+                "adhd": cls.ADHD,
+                "dyslexia": cls.DYSLEXIA,
+                "autism": cls.AUTISM,
+                "custom": cls.CUSTOM,
+            }
+            return mapping.get(normalized)
+        return None
+
 
 class EnergyLevel(str, Enum):
     HIGH = "High"
@@ -102,7 +116,7 @@ class LessonRequest(BaseModel):
 
 
 class SimplifyRequest(BaseModel):
-    text: str = Field(..., description="Text to simplify", min_length=10)
+    text: str = Field(..., description="Text to simplify", min_length=1)
     user_profile: NeuroProfileType = Field(..., description="The user's neuro-profile type")
 
 
@@ -121,6 +135,18 @@ class DeepDiveRequest(BaseModel):
     parent_topic: str = Field(..., description="The parent topic for context")
     sub_topic: str = Field(..., description="The sub-topic to deep dive into")
     user_profile: NeuroProfileType = Field(..., description="The user's neuro-profile type")
+
+
+class VoiceCommandRequest(BaseModel):
+    transcription: str = Field(..., description="Recognized voice text from user", min_length=1)
+
+
+class VoiceCommandResponse(BaseModel):
+    action_type: str
+    feature_name: Optional[str] = None
+    dom_action: Optional[dict] = None
+    speak_message: Optional[str] = None
+    normalized_command: Optional[str] = None
 
 
 # ============================================

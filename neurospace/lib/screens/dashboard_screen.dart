@@ -3,6 +3,9 @@
 // Fully adaptive to the active NeuroProfile.
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:provider/provider.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:image_picker/image_picker.dart';
@@ -19,6 +22,8 @@ import 'panic_screen.dart';
 import 'maps_screen.dart';
 import 'settings_screen.dart';
 import 'scan_result_screen.dart';
+import 'quick_help_screen.dart';
+import '../services/android_assistant_bridge.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -78,15 +83,180 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   /// Shared method to launch the overlay bubble.
   Future<void> _launchOverlayBubble() async {
-    await FlutterOverlayWindow.showOverlay(
-      enableDrag: true,
-      overlayTitle: "NeuroSpace",
-      overlayContent: "Tap the bubble for accessibility tools",
-      flag: OverlayFlag.defaultFlag,
-      visibility: NotificationVisibility.visibilityPublic,
-      positionGravity: PositionGravity.right,
-      width: 90,
-      height: 90,
+      await FlutterOverlayWindow.showOverlay(
+        enableDrag: false,
+        overlayTitle: "NeuroSpace",
+        overlayContent: "Tap the bubble for accessibility tools",
+        flag: OverlayFlag.defaultFlag,
+        visibility: NotificationVisibility.visibilityPublic,
+        positionGravity: PositionGravity.none,
+        width: WindowSize.matchParent,
+        height: WindowSize.matchParent,
+      );
+  }
+
+  Future<void> _showAssistantSetupSheet() async {
+    final profile = Provider.of<NeuroThemeProvider>(context, listen: false).activeProfile;
+    bool overlayGranted = false;
+    bool accessibilityEnabled = false;
+
+    try {
+      overlayGranted = await FlutterOverlayWindow.isPermissionGranted();
+    } catch (_) {}
+
+    try {
+      accessibilityEnabled = await AndroidAssistantBridge.isAccessibilityServiceEnabled();
+    } catch (_) {}
+
+    if (!mounted) return;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: profile.cardColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) {
+        Timer? pollTimer;
+        return StatefulBuilder(builder: (context, setModalState) {
+          pollTimer ??= Timer.periodic(const Duration(seconds: 1), (timer) async {
+            try {
+              final over = await FlutterOverlayWindow.isPermissionGranted();
+              final acc = await AndroidAssistantBridge.isAccessibilityServiceEnabled();
+              if (over != overlayGranted || acc != accessibilityEnabled) {
+                if (context.mounted) {
+                  setModalState(() {
+                    overlayGranted = over;
+                    accessibilityEnabled = acc;
+                  });
+                }
+              }
+            } catch (_) {}
+          });
+
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Assistant Setup',
+                    style: TextStyle(
+                      fontFamily: profile.fontFamily,
+                      fontSize: profile.fontSize + 4,
+                      fontWeight: FontWeight.w800,
+                      color: profile.textColor,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Enable permissions for global floating accessibility helper.',
+                    style: TextStyle(
+                      fontFamily: profile.fontFamily,
+                      fontSize: profile.fontSize - 2,
+                      color: profile.textColor.withOpacity(0.65),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  _buildSetupRow(
+                    title: 'Draw over other apps',
+                    ok: overlayGranted,
+                    profile: profile,
+                    onTap: () async {
+                      final granted = await FlutterOverlayWindow.isPermissionGranted();
+                      if (!granted) {
+                        await FlutterOverlayWindow.requestPermission();
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 10),
+                  _buildSetupRow(
+                    title: 'Accessibility service',
+                    ok: accessibilityEnabled,
+                    profile: profile,
+                    onTap: () async {
+                      await AndroidAssistantBridge.openAccessibilitySettings();
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: profile.accentColor,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      onPressed: () async {
+                        pollTimer?.cancel();
+                        Navigator.pop(ctx);
+                        await _launchOverlayBubble();
+                      },
+                      icon: const Icon(Icons.bubble_chart_rounded),
+                      label: const Text('Start Floating Assistant'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        });
+      },
+    ).whenComplete(() {
+      // ignore: avoid_print
+      print('Bottom sheet closed');
+    });
+  }
+
+  Widget _buildSetupRow({
+    required String title,
+    required bool ok,
+    required dynamic profile,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: profile.backgroundColor.withOpacity(0.45),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: profile.accentColor.withOpacity(0.15)),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              ok ? Icons.check_circle_rounded : Icons.radio_button_unchecked,
+              color: ok ? const Color(0xFF4CAF50) : profile.textColor.withOpacity(0.5),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                title,
+                style: TextStyle(
+                  fontFamily: profile.fontFamily,
+                  fontSize: profile.fontSize - 1,
+                  color: profile.textColor,
+                ),
+              ),
+            ),
+            Text(
+              ok ? 'Enabled' : 'Enable',
+              style: TextStyle(
+                fontFamily: profile.fontFamily,
+                fontWeight: FontWeight.w700,
+                color: ok ? const Color(0xFF4CAF50) : profile.accentColor,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -792,7 +962,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               onTap: () async {
                 final bool status = await FlutterOverlayWindow.isPermissionGranted();
                 if (!status) {
-                  await FlutterOverlayWindow.requestPermission();
+                  await _showAssistantSetupSheet();
                 } else {
                   await _launchOverlayBubble();
                 }
@@ -846,7 +1016,41 @@ class _DashboardScreenState extends State<DashboardScreen> {
               },
             ),
             const SizedBox(width: 12),
-            Expanded(child: Container()), // Empty placeholder to keep equal width styling
+            _QuickActionCard(
+              icon: Icons.accessibility_new_rounded,
+              label: 'Assistant Setup',
+              color: const Color(0xFF26A69A),
+              delay: 900,
+              onTap: () async {
+                if (!kIsWeb && Platform.isAndroid) {
+                  await _showAssistantSetupSheet();
+                } else {
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Global overlay setup is Android-only.')),
+                  );
+                }
+              },
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            _QuickActionCard(
+              icon: Icons.support_agent_rounded,
+              label: 'Quick Help',
+              color: const Color(0xFF5C6BC0),
+              delay: 1000,
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const QuickHelpScreen()),
+                );
+              },
+            ),
+            const SizedBox(width: 12),
+            Expanded(child: Container()),
           ],
         ),
       ],
