@@ -11,9 +11,8 @@ import android.view.accessibility.AccessibilityWindowInfo
 /**
  * NeuroSpace Accessibility Service
  * ================================
- * Captures all visible text content from any screen.
- * Writes the collected text to SharedPreferences so the
- * Flutter overlay can read it for summarization/TTS.
+ * Captures meaningful text content from any screen, filtering out
+ * advertisements, system UI, navigation chrome, and short fragments.
  *
  * The user must enable this service once in:
  *   Settings → Accessibility → NeuroSpace
@@ -43,6 +42,46 @@ class NeuroAccessibilityService : AccessibilityService() {
             AccessibilityWindowInfo.TYPE_SYSTEM,           // System-level windows (status bar)
             AccessibilityWindowInfo.TYPE_INPUT_METHOD,      // Keyboard windows
             AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY, // Accessibility overlays
+        )
+
+        /** View IDs that typically contain ads */
+        private val AD_VIEW_ID_PATTERNS = listOf(
+            "ad_", "ads_", "adview", "ad_container", "ad_frame",
+            "banner_ad", "admob", "google_ads", "adUnit",
+            "native_ad", "interstitial", "reward_ad",
+            "sponsored", "promo_banner", "ad_layout",
+        )
+
+        /** Class names of common ad SDK views */
+        private val AD_CLASS_PATTERNS = listOf(
+            "com.google.android.gms.ads",
+            "com.facebook.ads",
+            "com.applovin",
+            "com.unity3d.ads",
+            "com.mopub",
+            "com.inmobi",
+            "com.ironsource",
+            "AdView", "NativeAdView", "BannerAd",
+        )
+
+        /** Common ad / promo text patterns to detect and skip */
+        private val AD_TEXT_PATTERNS = listOf(
+            Regex("^(Ad|AD|Sponsored|Advertisement)$", RegexOption.IGNORE_CASE),
+            Regex("^Install Now$", RegexOption.IGNORE_CASE),
+            Regex("^(Download|Get it on|Shop Now|Buy Now|Order Now|Sign Up|Subscribe)$", RegexOption.IGNORE_CASE),
+            Regex("^Login for better experience", RegexOption.IGNORE_CASE),
+            Regex("^Login Now$", RegexOption.IGNORE_CASE),
+            Regex("^(Skip Ad|Close Ad|Why this ad)$", RegexOption.IGNORE_CASE),
+            Regex("^\\d+\\s*×\\s*\\d+$"),  // Ad dimension labels like "320x50"
+        )
+
+        /** Navigation / chrome text to skip */
+        private val CHROME_TEXT_EXACT = setOf(
+            "Home", "Search", "Menu", "More", "Share", "Back",
+            "Forward", "Refresh", "Stop", "Settings", "Close",
+            "Cancel", "OK", "Done", "Yes", "No", "Got it",
+            "Allow", "Deny", "Accept", "Decline", "Skip",
+            "Next", "Previous", "Prev",
         )
     }
 
@@ -97,7 +136,7 @@ class NeuroAccessibilityService : AccessibilityService() {
 
                     // Only read from APPLICATION type windows (real apps)
                     if (window.type == AccessibilityWindowInfo.TYPE_APPLICATION) {
-                        extractText(rootNode, textBuilder)
+                        extractText(rootNode, textBuilder, depth = 0)
                         if (sourcePackage.isEmpty() && pkg.isNotEmpty()) {
                             sourcePackage = pkg
                         }
@@ -126,25 +165,88 @@ class NeuroAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Recursively walk the accessibility node tree and extract all text content.
+     * Check if a node is an ad container based on its view ID or class name.
      */
-    private fun extractText(node: AccessibilityNodeInfo, builder: StringBuilder) {
+    private fun isAdNode(node: AccessibilityNodeInfo): Boolean {
+        // Check view ID
+        val viewId = node.viewIdResourceName?.lowercase() ?: ""
+        for (pattern in AD_VIEW_ID_PATTERNS) {
+            if (viewId.contains(pattern)) return true
+        }
+
+        // Check class name
+        val className = node.className?.toString() ?: ""
+        for (pattern in AD_CLASS_PATTERNS) {
+            if (className.contains(pattern, ignoreCase = true)) return true
+        }
+
+        return false
+    }
+
+    /**
+     * Check if text looks like an advertisement or promo.
+     */
+    private fun isAdText(text: String): Boolean {
+        for (pattern in AD_TEXT_PATTERNS) {
+            if (pattern.containsMatchIn(text)) return true
+        }
+        return false
+    }
+
+    /**
+     * Check if text is navigation chrome (single-word buttons etc.)
+     */
+    private fun isChromeText(text: String): Boolean {
+        return text in CHROME_TEXT_EXACT
+    }
+
+    /**
+     * Recursively walk the accessibility node tree and extract meaningful text content.
+     * Skips ad containers, navigation buttons, and short non-informative fragments.
+     */
+    private fun extractText(node: AccessibilityNodeInfo, builder: StringBuilder, depth: Int) {
+        // Skip ad containers entirely (don't recurse into children)
+        if (isAdNode(node)) return
+
+        // Skip clickable leaf nodes that look like buttons (navigation chrome)
+        // but keep clickable items in lists (like article titles)
+        val isButton = node.className?.toString()?.contains("Button") == true
+        val isImageView = node.className?.toString()?.contains("ImageView") == true
+
         // Get text from this node
         val nodeText = node.text?.toString()?.trim()
         if (!nodeText.isNullOrEmpty()) {
-            builder.append(nodeText).append("\n")
+            // Skip very short text (single chars, icons, labels)
+            val isLongEnough = nodeText.length > 3
+
+            // Skip ad-like text
+            val isAd = isAdText(nodeText)
+
+            // Skip navigation chrome (but only single-word matches)
+            val isChrome = isChromeText(nodeText) && isButton
+
+            // Skip content description duplicates on ImageViews
+            val isDecorative = isImageView && nodeText.length < 20
+
+            if (isLongEnough && !isAd && !isChrome && !isDecorative) {
+                builder.append(nodeText).append("\n")
+            }
         }
 
-        // Also check content description (for images with alt text, icons, etc.)
+        // Also check content description (for images with alt text)
+        // But only if it's substantial (skip icon descriptions)
         val contentDesc = node.contentDescription?.toString()?.trim()
-        if (!contentDesc.isNullOrEmpty() && contentDesc != nodeText) {
+        if (!contentDesc.isNullOrEmpty() && contentDesc != nodeText
+            && contentDesc.length > 10
+            && !isAdText(contentDesc)
+            && !isImageView) {
             builder.append(contentDesc).append("\n")
         }
 
         // Recurse into children
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            extractText(child, builder)
+            extractText(child, builder, depth + 1)
             child.recycle()
         }
     }

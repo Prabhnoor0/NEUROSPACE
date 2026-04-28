@@ -149,6 +149,7 @@ class _HoverInfoCardState extends State<HoverInfoCard> {
   Widget _buildHoverCard() {
     final p = widget.profile;
     return Container(
+      constraints: const BoxConstraints(maxHeight: 420),
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: p.cardColor,
@@ -181,72 +182,79 @@ class _HoverInfoCardState extends State<HoverInfoCard> {
               color: p.textColor,
             ),
           ),
-          const SizedBox(height: 6),
-          // Summary
-          Text(
-            widget.summary,
-            maxLines: 4,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontFamily: p.fontFamily,
-              fontSize: p.fontSize - 2,
-              color: p.textColor.withValues(alpha: 0.6),
-              height: 1.5,
+          const SizedBox(height: 8),
+          // Scrollable summary
+          Flexible(
+            child: Scrollbar(
+              thumbVisibility: true,
+              thickness: 3,
+              radius: const Radius.circular(4),
+              child: SingleChildScrollView(
+                physics: const BouncingScrollPhysics(),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _FormattedSummaryText(
+                      text: widget.summary,
+                      profile: p,
+                    ),
+
+                    // Wikipedia Links
+                    if (_wikiLinks.isNotEmpty) ...[
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 4,
+                        children: _wikiLinks.take(2).map((link) {
+                          return GestureDetector(
+                            onTap: () async {
+                              final uri = Uri.parse(link['url'] ?? '');
+                              if (await canLaunchUrl(uri)) {
+                                await launchUrl(uri,
+                                    mode: LaunchMode.externalApplication);
+                              }
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF448AFF).withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color:
+                                      const Color(0xFF448AFF).withValues(alpha: 0.2),
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.language_rounded,
+                                      color: Color(0xFF448AFF), size: 12),
+                                  const SizedBox(width: 4),
+                                  Flexible(
+                                    child: Text(
+                                      link['title'] ?? '',
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600,
+                                        color: Color(0xFF448AFF),
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
             ),
           ),
-
-          // Wikipedia Links
-          if (_wikiLinks.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            Wrap(
-              spacing: 6,
-              runSpacing: 4,
-              children: _wikiLinks.take(2).map((link) {
-                return GestureDetector(
-                  onTap: () async {
-                    final uri = Uri.parse(link['url'] ?? '');
-                    if (await canLaunchUrl(uri)) {
-                      await launchUrl(uri,
-                          mode: LaunchMode.externalApplication);
-                    }
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF448AFF).withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color:
-                            const Color(0xFF448AFF).withValues(alpha: 0.2),
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(Icons.language_rounded,
-                            color: Color(0xFF448AFF), size: 12),
-                        const SizedBox(width: 4),
-                        Flexible(
-                          child: Text(
-                            link['title'] ?? '',
-                            style: const TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                              color: Color(0xFF448AFF),
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              }).toList(),
-            ),
-          ],
-
           const SizedBox(height: 12),
           _buildActionButtons(p),
         ],
@@ -256,105 +264,142 @@ class _HoverInfoCardState extends State<HoverInfoCard> {
 
   Widget _buildMobileSheet() {
     final p = widget.profile;
-    return Container(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
-      decoration: BoxDecoration(
-        color: p.cardColor,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Drag handle
-          Container(
-            width: 40,
-            height: 4,
-            decoration: BoxDecoration(
-              color: p.textColor.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(2),
-            ),
+    return DraggableScrollableSheet(
+      initialChildSize: 0.5,
+      minChildSize: 0.3,
+      maxChildSize: 0.9,
+      builder: (context, scrollController) {
+        return Container(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
+          decoration: BoxDecoration(
+            color: p.cardColor,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
           ),
-          const SizedBox(height: 16),
-          Text(
-            widget.title,
-            style: TextStyle(
-              fontFamily: p.fontFamily,
-              fontSize: p.fontSize + 2,
-              fontWeight: FontWeight.w700,
-              color: p.textColor,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            widget.summary,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontFamily: p.fontFamily,
-              fontSize: p.fontSize - 1,
-              color: p.textColor.withValues(alpha: 0.6),
-              height: 1.5,
-            ),
-          ),
+          child: Column(
+            children: [
+              // Drag handle
+              Container(
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 4),
+                decoration: BoxDecoration(
+                  color: p.textColor.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              Text(
+                'Swipe up for more',
+                style: TextStyle(
+                  fontSize: 10,
+                  color: p.textColor.withValues(alpha: 0.3),
+                ),
+              ),
+              const SizedBox(height: 10),
 
-          // Wikipedia links in mobile sheet
-          if (_wikiLinks.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            SizedBox(
-              height: 32,
-              child: ListView(
-                scrollDirection: Axis.horizontal,
-                children: _wikiLinks.map((link) {
-                  return Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: GestureDetector(
-                      onTap: () async {
-                        final uri = Uri.parse(link['url'] ?? '');
-                        if (await canLaunchUrl(uri)) {
-                          await launchUrl(uri,
-                              mode: LaunchMode.externalApplication);
-                        }
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF448AFF)
-                              .withValues(alpha: 0.1),
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(
-                            color: const Color(0xFF448AFF)
-                                .withValues(alpha: 0.2),
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.open_in_browser_rounded,
-                                color: Color(0xFF448AFF), size: 14),
-                            const SizedBox(width: 6),
-                            Text(
-                              link['title'] ?? '',
-                              style: TextStyle(
-                                fontFamily: p.fontFamily,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                                color: const Color(0xFF448AFF),
-                              ),
-                            ),
-                          ],
+              // Scrollable content area
+              Expanded(
+                child: Scrollbar(
+                  thumbVisibility: true,
+                  thickness: 3,
+                  radius: const Radius.circular(4),
+                  controller: scrollController,
+                  child: ListView(
+                    controller: scrollController,
+                    padding: EdgeInsets.zero,
+                    children: [
+                      // Title
+                      Text(
+                        widget.title,
+                        style: TextStyle(
+                          fontFamily: p.fontFamily,
+                          fontSize: p.fontSize + 2,
+                          fontWeight: FontWeight.w700,
+                          color: p.textColor,
                         ),
                       ),
-                    ),
-                  );
-                }).toList(),
-              ),
-            ),
-          ],
+                      const SizedBox(height: 12),
 
-          const SizedBox(height: 20),
-          _buildActionButtons(p),
-        ],
-      ),
+                      // Formatted summary — full content, scrollable
+                      _FormattedSummaryText(
+                        text: widget.summary,
+                        profile: p,
+                      ),
+
+                      // Wikipedia links
+                      if (_wikiLinks.isNotEmpty) ...[
+                        const SizedBox(height: 16),
+                        Text(
+                          'Related Articles',
+                          style: TextStyle(
+                            fontFamily: p.fontFamily,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: p.textColor.withValues(alpha: 0.5),
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        ...(_wikiLinks.map((link) {
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: GestureDetector(
+                              onTap: () async {
+                                final uri = Uri.parse(link['url'] ?? '');
+                                if (await canLaunchUrl(uri)) {
+                                  await launchUrl(uri,
+                                      mode: LaunchMode.externalApplication);
+                                }
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 10),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF448AFF)
+                                      .withValues(alpha: 0.08),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                    color: const Color(0xFF448AFF)
+                                        .withValues(alpha: 0.15),
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    const Icon(Icons.open_in_browser_rounded,
+                                        color: Color(0xFF448AFF), size: 16),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        link['title'] ?? '',
+                                        style: TextStyle(
+                                          fontFamily: p.fontFamily,
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w600,
+                                          color: const Color(0xFF448AFF),
+                                        ),
+                                      ),
+                                    ),
+                                    Icon(Icons.arrow_forward_ios_rounded,
+                                        color: const Color(0xFF448AFF).withValues(alpha: 0.4),
+                                        size: 12),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          );
+                        })),
+                      ],
+
+                      const SizedBox(height: 20),
+                      _buildActionButtons(p),
+                      const SizedBox(height: 16),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -486,4 +531,134 @@ class _HoverInfoCardState extends State<HoverInfoCard> {
       ),
     );
   }
+}
+
+/// Renders summary text with smart formatting:
+/// - Splits into paragraphs on double newlines
+/// - Detects bullet points (•, -, *) and formats them
+/// - Detects headings (lines ending with :) and bolds them
+/// - Proper line spacing for readability
+class _FormattedSummaryText extends StatelessWidget {
+  final String text;
+  final NeuroProfile profile;
+
+  const _FormattedSummaryText({
+    required this.text,
+    required this.profile,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final paragraphs = _parseParagraphs(text);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: paragraphs.map((block) {
+        if (block.type == _BlockType.heading) {
+          return Padding(
+            padding: const EdgeInsets.only(top: 10, bottom: 4),
+            child: Text(
+              block.text,
+              style: TextStyle(
+                fontFamily: profile.fontFamily,
+                fontSize: profile.fontSize,
+                fontWeight: FontWeight.w700,
+                color: profile.textColor,
+                height: 1.4,
+              ),
+            ),
+          );
+        }
+
+        if (block.type == _BlockType.bullet) {
+          return Padding(
+            padding: const EdgeInsets.only(left: 4, top: 3, bottom: 3),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '•  ',
+                  style: TextStyle(
+                    fontFamily: profile.fontFamily,
+                    fontSize: profile.fontSize - 1,
+                    fontWeight: FontWeight.w700,
+                    color: profile.accentColor,
+                    height: 1.6,
+                  ),
+                ),
+                Expanded(
+                  child: Text(
+                    block.text,
+                    style: TextStyle(
+                      fontFamily: profile.fontFamily,
+                      fontSize: profile.fontSize - 1,
+                      color: profile.textColor.withValues(alpha: 0.75),
+                      height: 1.6,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+
+        // Regular paragraph
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Text(
+            block.text,
+            style: TextStyle(
+              fontFamily: profile.fontFamily,
+              fontSize: profile.fontSize - 1,
+              color: profile.textColor.withValues(alpha: 0.7),
+              height: 1.65,
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  List<_TextBlock> _parseParagraphs(String raw) {
+    final blocks = <_TextBlock>[];
+    // Split on double newlines or single newlines
+    final lines = raw.split(RegExp(r'\n'));
+
+    for (final line in lines) {
+      final trimmed = line.trim();
+      if (trimmed.isEmpty) continue;
+
+      // Detect bullet points
+      if (trimmed.startsWith('• ') ||
+          trimmed.startsWith('- ') ||
+          trimmed.startsWith('* ') ||
+          RegExp(r'^\d+[\.\)]\s').hasMatch(trimmed)) {
+        // Strip the bullet prefix
+        final bulletText = trimmed
+            .replaceFirst(RegExp(r'^[•\-\*]\s*'), '')
+            .replaceFirst(RegExp(r'^\d+[\.\)]\s*'), '');
+        blocks.add(_TextBlock(bulletText, _BlockType.bullet));
+        continue;
+      }
+
+      // Detect headings (lines ending with : or ALL CAPS short lines)
+      if ((trimmed.endsWith(':') && trimmed.length < 80) ||
+          (trimmed.length < 50 && trimmed == trimmed.toUpperCase() && trimmed.contains(RegExp(r'[A-Z]')))) {
+        blocks.add(_TextBlock(trimmed, _BlockType.heading));
+        continue;
+      }
+
+      blocks.add(_TextBlock(trimmed, _BlockType.paragraph));
+    }
+
+    return blocks;
+  }
+}
+
+enum _BlockType { paragraph, bullet, heading }
+
+class _TextBlock {
+  final String text;
+  final _BlockType type;
+  const _TextBlock(this.text, this.type);
 }

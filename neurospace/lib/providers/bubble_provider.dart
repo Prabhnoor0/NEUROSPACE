@@ -171,16 +171,28 @@ class BubbleProvider extends ChangeNotifier {
 
   Future<AssistantContentPayload> _resolvePayload({String? text}) async {
     if (text != null && text.trim().isNotEmpty) {
+      debugPrint('[NeuroSpace] Using explicit text input (${text.length} chars)');
       return _contentService.fromPastedText(text);
     }
 
     final accessibilityActive = await _contentService.isAccessibilityServiceActive();
+    debugPrint('[NeuroSpace] Accessibility service active: $accessibilityActive');
+
     if (accessibilityActive) {
       final screenPayload = await _contentService.fromAccessibilityScreen();
-      if (screenPayload.hasEnoughText) return screenPayload;
+      debugPrint('[NeuroSpace] Screen text: ${screenPayload.text.length} chars, '
+          'hasEnough: ${screenPayload.hasEnoughText}');
+      if (screenPayload.text.isNotEmpty) {
+        debugPrint('[NeuroSpace] Screen preview: "${screenPayload.text.substring(0, screenPayload.text.length > 100 ? 100 : screenPayload.text.length)}..."');
+      }
+      if (screenPayload.hasEnoughText) {
+        debugPrint('[NeuroSpace] ✅ Using SCREEN text as source');
+        return screenPayload;
+      }
     }
 
     final clipboardPayload = await _contentService.fromClipboard();
+    debugPrint('[NeuroSpace] Falling back to clipboard: ${clipboardPayload.text.length} chars');
     return clipboardPayload;
   }
 

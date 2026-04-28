@@ -104,9 +104,26 @@ class _LessonScreenState extends State<LessonScreen> {
       final backendModules = response['modules'] as List? ?? [];
       final lessonModules = <LessonModule>[];
 
+      // Collect wikipedia_link modules into WikiLink objects
+      final collectedWikiLinks = <WikiLink>[];
+
       for (final mod in backendModules) {
         final modMap = Map<String, dynamic>.from(mod);
         final modType = modMap['type'] ?? 'text_block';
+
+        // Handle wikipedia_link modules — collect them, don't render as cards
+        if (modType == 'wikipedia_link') {
+          final title = (modMap['title'] ?? modMap['content'] ?? '').toString();
+          final url = (modMap['url'] ?? '').toString();
+          if (title.isNotEmpty) {
+            // If backend didn't provide a URL, construct one from the title
+            final resolvedUrl = url.isNotEmpty
+                ? url
+                : 'https://en.wikipedia.org/wiki/${Uri.encodeComponent(title.replaceAll(' ', '_'))}';
+            collectedWikiLinks.add(WikiLink(title: title, url: resolvedUrl));
+          }
+          continue; // Don't create a lesson module card for this
+        }
 
         final sections = <ModuleSection>[];
 
@@ -220,10 +237,14 @@ class _LessonScreenState extends State<LessonScreen> {
                     ?.map((e) => e.toString())
                     .toList() ??
                 [],
-            wikipediaLinks: (response['wikipedia_links'] as List?)
-                    ?.map((e) => WikiLink.fromJson(Map<String, dynamic>.from(e)))
-                    .toList() ??
-                [],
+            // Merge: top-level wikipedia_links from backend + collected from modules
+            wikipediaLinks: [
+              ...collectedWikiLinks,
+              ...((response['wikipedia_links'] as List?)
+                      ?.map((e) => WikiLink.fromJson(Map<String, dynamic>.from(e)))
+                      .toList() ??
+                  []),
+            ],
             quizQuestions: ((response['interactive'] as Map<String, dynamic>?)?['quiz'] as List?)
                     ?.map((e) => QuizQuestion.fromJson(Map<String, dynamic>.from(e)))
                     .toList() ??
@@ -310,8 +331,25 @@ class _LessonScreenState extends State<LessonScreen> {
 
   /// Save the current lesson to Firebase Library
   Future<void> _saveLesson(NeuroProfile profile) async {
-    final userId = FirebaseService.currentUserId;
-    if (userId == null) return;
+    String? userId = FirebaseService.currentUserId;
+
+    // If not authenticated yet, try to authenticate now
+    if (userId == null) {
+      try {
+        userId = await FirebaseService.ensureAuthenticated();
+      } catch (e) {
+        debugPrint('Firebase auth failed: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Could not save: Firebase authentication failed.'),
+              backgroundColor: Colors.redAccent,
+            ),
+          );
+        }
+        return;
+      }
+    }
 
     try {
       final moduleMaps = _lesson!.modules.map((m) => {
@@ -1669,15 +1707,19 @@ class _LessonScreenState extends State<LessonScreen> {
 
   List<String> _parseMermaidToNodes(String mermaid) {
     final nodes = <String>[];
-    final lines = mermaid.split('\n');
     final labelRegex = RegExp(r'\[([^\]]+)\]|\(([^)]+)\)|"([^"]+)"');
 
-    for (final line in lines) {
-      if (line.trim().startsWith('graph') ||
-          line.trim().startsWith('flowchart') ||
-          line.trim().isEmpty) continue;
+    // Split by newlines AND semicolons (LLM often puts everything on one line
+    // separated by semicolons: "graph TD; A[X] --> B[Y]; B --> C[Z]")
+    final parts = mermaid.split(RegExp(r'[\n;]'));
 
-      final matches = labelRegex.allMatches(line);
+    for (final part in parts) {
+      final trimmed = part.trim();
+      if (trimmed.startsWith('graph') ||
+          trimmed.startsWith('flowchart') ||
+          trimmed.isEmpty) continue;
+
+      final matches = labelRegex.allMatches(trimmed);
       for (final match in matches) {
         final label = match.group(1) ?? match.group(2) ?? match.group(3);
         if (label != null && !nodes.contains(label)) {

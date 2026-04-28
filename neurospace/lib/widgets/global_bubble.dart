@@ -315,7 +315,7 @@ class _GlobalAccessibilityBubbleState extends State<GlobalAccessibilityBubble>
 
     final title = switch (bubble.currentAction) {
       BubbleAction.tts => '🔊 Read Aloud',
-      BubbleAction.simplify => '✨ Simplify',
+      BubbleAction.simplify => '✨ Simplified',
       BubbleAction.summarize => '📝 Summary',
       BubbleAction.easyRead => '🔤 Easy Read',
       BubbleAction.scan => '📸 Scan Result',
@@ -343,9 +343,9 @@ class _GlobalAccessibilityBubbleState extends State<GlobalAccessibilityBubble>
       key: const ValueKey('result'),
       color: Colors.transparent,
       child: Container(
-        width: 300,
-        constraints: const BoxConstraints(maxHeight: 420),
-        padding: const EdgeInsets.all(20),
+        width: 310,
+        constraints: const BoxConstraints(maxHeight: 560),
+        padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
           color: isEasyRead
               ? const Color(0xFFFFF9E6) // warm off-white for easy read
@@ -423,7 +423,7 @@ class _GlobalAccessibilityBubbleState extends State<GlobalAccessibilityBubble>
                 ),
               ],
             ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 12),
 
             // TTS playback controls
             if (isTTS && !bubble.isProcessing && bubble.resultText.isNotEmpty)
@@ -480,40 +480,76 @@ class _GlobalAccessibilityBubbleState extends State<GlobalAccessibilityBubble>
                 ),
               ),
 
-            // Result text
+            // Result text — scrollable with visible scrollbar
             if (!hasError && !bubble.isProcessing && bubble.resultText.isNotEmpty)
               Flexible(
-                child: SingleChildScrollView(
-                  physics: const BouncingScrollPhysics(),
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      color: isEasyRead
-                          ? Colors.white
-                          : const Color(0xFF242938),
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(
-                        color: accentColor.withOpacity(0.1),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Scroll hint
+                    if (bubble.resultText.length > 200)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.swipe_vertical_rounded,
+                                size: 12,
+                                color: isEasyRead
+                                    ? Colors.black26
+                                    : Colors.white24),
+                            const SizedBox(width: 4),
+                            Text(
+                              'Scroll for more',
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: isEasyRead
+                                    ? Colors.black26
+                                    : Colors.white24,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    Flexible(
+                      child: Scrollbar(
+                        thumbVisibility: true,
+                        thickness: 3,
+                        radius: const Radius.circular(4),
+                        child: SingleChildScrollView(
+                          physics: const BouncingScrollPhysics(),
+                          child: Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: isEasyRead
+                                  ? Colors.white
+                                  : const Color(0xFF242938),
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(
+                                color: accentColor.withOpacity(0.1),
+                              ),
+                            ),
+                            child: _buildFormattedResult(
+                              bubble.resultText,
+                              fontFamily: displayFont,
+                              fontSize: displaySize,
+                              lineHeight: displayHeight,
+                              letterSpacing: displayLetterSpacing,
+                              isEasyRead: isEasyRead,
+                              accentColor: accentColor,
+                            ),
+                          ),
+                        ),
                       ),
                     ),
-                    child: SelectableText(
-                      bubble.resultText,
-                      style: TextStyle(
-                        fontFamily: displayFont,
-                        fontSize: displaySize,
-                        height: displayHeight,
-                        letterSpacing: displayLetterSpacing,
-                        color: isEasyRead
-                            ? const Color(0xFF1A1A1A)
-                            : Colors.white.withOpacity(0.85),
-                      ),
-                    ),
-                  ),
+                  ],
                 ),
               ),
 
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
 
             // Bottom actions
             Row(
@@ -586,6 +622,119 @@ class _GlobalAccessibilityBubbleState extends State<GlobalAccessibilityBubble>
           ],
         ),
       ),
+    );
+  }
+
+  /// Formats result text with paragraphs, bullet points, and headings
+  /// for better readability instead of showing a raw text dump.
+  Widget _buildFormattedResult(
+    String text, {
+    required String fontFamily,
+    required double fontSize,
+    required double lineHeight,
+    required double letterSpacing,
+    required bool isEasyRead,
+    required Color accentColor,
+  }) {
+    final textColor = isEasyRead ? const Color(0xFF1A1A1A) : Colors.white;
+    final blocks = <Widget>[];
+    final lines = text.split('\n');
+
+    for (final line in lines) {
+      final trimmed = line.trim();
+      if (trimmed.isEmpty) {
+        blocks.add(const SizedBox(height: 6));
+        continue;
+      }
+
+      // Bullet points
+      if (trimmed.startsWith('• ') ||
+          trimmed.startsWith('- ') ||
+          trimmed.startsWith('* ') ||
+          RegExp(r'^\d+[\.)\]]\s').hasMatch(trimmed)) {
+        final bulletText = trimmed
+            .replaceFirst(RegExp(r'^[•\-\*]\s*'), '')
+            .replaceFirst(RegExp(r'^\d+[\.)\]]\s*'), '');
+        blocks.add(
+          Padding(
+            padding: const EdgeInsets.only(left: 4, top: 2, bottom: 2),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '•  ',
+                  style: TextStyle(
+                    fontFamily: fontFamily,
+                    fontSize: fontSize,
+                    fontWeight: FontWeight.w700,
+                    color: accentColor,
+                    height: lineHeight,
+                  ),
+                ),
+                Expanded(
+                  child: SelectableText(
+                    bulletText,
+                    style: TextStyle(
+                      fontFamily: fontFamily,
+                      fontSize: fontSize,
+                      height: lineHeight,
+                      letterSpacing: letterSpacing,
+                      color: textColor.withOpacity(0.85),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+        continue;
+      }
+
+      // Headings (short lines ending with : or ALL CAPS)
+      if ((trimmed.endsWith(':') && trimmed.length < 80) ||
+          (trimmed.length < 50 &&
+              trimmed == trimmed.toUpperCase() &&
+              trimmed.contains(RegExp(r'[A-Z]')))) {
+        blocks.add(
+          Padding(
+            padding: const EdgeInsets.only(top: 8, bottom: 4),
+            child: Text(
+              trimmed,
+              style: TextStyle(
+                fontFamily: fontFamily,
+                fontSize: fontSize + 1,
+                fontWeight: FontWeight.w700,
+                color: textColor,
+                height: 1.4,
+                letterSpacing: letterSpacing,
+              ),
+            ),
+          ),
+        );
+        continue;
+      }
+
+      // Regular paragraph
+      blocks.add(
+        Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: SelectableText(
+            trimmed,
+            style: TextStyle(
+              fontFamily: fontFamily,
+              fontSize: fontSize,
+              height: lineHeight,
+              letterSpacing: letterSpacing,
+              color: textColor.withOpacity(0.85),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: blocks,
     );
   }
 
