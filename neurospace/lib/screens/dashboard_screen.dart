@@ -23,6 +23,7 @@ import 'maps_screen.dart';
 import 'settings_screen.dart';
 import 'scan_result_screen.dart';
 import 'quick_help_screen.dart';
+import 'resource_dashboard_screen.dart';
 import '../services/android_assistant_bridge.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -1050,7 +1051,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
               },
             ),
             const SizedBox(width: 12),
-            Expanded(child: Container()),
+            _QuickActionCard(
+              icon: Icons.health_and_safety_rounded,
+              label: 'Resource Help',
+              color: const Color(0xFF26A69A),
+              delay: 1100,
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const ResourceDashboardScreen()),
+                );
+              },
+            ),
           ],
         ),
       ],

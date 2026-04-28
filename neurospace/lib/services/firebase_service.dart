@@ -183,4 +183,99 @@ class FirebaseService {
     }
     return total;
   }
+
+  // =============================================
+  // Resource Bookings
+  // =============================================
+
+  /// Save a resource booking
+  static Future<String> saveBooking({
+    required String userId,
+    required Map<String, dynamic> bookingData,
+  }) async {
+    bookingData['savedAt'] = DateTime.now().toIso8601String();
+    final ref = _db.ref('users/$userId/bookings').push();
+    await ref.set(bookingData);
+    return ref.key!;
+  }
+
+  /// Get all bookings for a user
+  static Future<List<Map<String, dynamic>>> getBookings(String userId) async {
+    final snapshot = await _db
+        .ref('users/$userId/bookings')
+        .orderByChild('date')
+        .get();
+
+    if (!snapshot.exists || snapshot.value == null) return [];
+
+    final bookingsMap = Map<String, dynamic>.from(snapshot.value as Map);
+    final bookings = <Map<String, dynamic>>[];
+
+    bookingsMap.forEach((key, value) {
+      final booking = Map<String, dynamic>.from(value as Map);
+      booking['firebase_key'] = key;
+      bookings.add(booking);
+    });
+
+    bookings.sort((a, b) {
+      final aDate = a['date'] ?? '';
+      final bDate = b['date'] ?? '';
+      return bDate.compareTo(aDate);
+    });
+
+    return bookings;
+  }
+
+  /// Update a booking status in Firebase
+  static Future<void> updateBookingStatus({
+    required String userId,
+    required String firebaseKey,
+    required String status,
+  }) async {
+    await _db.ref('users/$userId/bookings/$firebaseKey/status').set(status);
+  }
+
+  // =============================================
+  // Help Requests
+  // =============================================
+
+  /// Save a help request
+  static Future<String> saveHelpRequest({
+    required String userId,
+    required Map<String, dynamic> helpData,
+  }) async {
+    helpData['savedAt'] = DateTime.now().toIso8601String();
+    final ref = _db.ref('users/$userId/helpRequests').push();
+    await ref.set(helpData);
+    return ref.key!;
+  }
+
+  /// Get all help requests for a user
+  static Future<List<Map<String, dynamic>>> getHelpRequests(
+      String userId) async {
+    final snapshot = await _db
+        .ref('users/$userId/helpRequests')
+        .orderByChild('created_at')
+        .get();
+
+    if (!snapshot.exists || snapshot.value == null) return [];
+
+    final requestsMap = Map<String, dynamic>.from(snapshot.value as Map);
+    final requests = <Map<String, dynamic>>[];
+
+    requestsMap.forEach((key, value) {
+      final request = Map<String, dynamic>.from(value as Map);
+      request['firebase_key'] = key;
+      requests.add(request);
+    });
+
+    requests.sort((a, b) {
+      final aDate = a['created_at'] ?? '';
+      final bDate = b['created_at'] ?? '';
+      return bDate.compareTo(aDate);
+    });
+
+    return requests;
+  }
 }
+
