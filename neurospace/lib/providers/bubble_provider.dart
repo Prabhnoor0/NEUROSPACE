@@ -3,6 +3,7 @@
 /// Controls bubble position, expansion state, action results, and TTS.
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'dart:convert';
@@ -67,6 +68,9 @@ class BubbleProvider extends ChangeNotifier {
 
   // ── Backend URL ──
   List<String> get _baseUrls {
+    if (kIsWeb) {
+      return const ['https://neurospace-kky9.onrender.com'];
+    }
     if (Platform.isAndroid) {
       return const [
         'http://10.0.2.2:8000',

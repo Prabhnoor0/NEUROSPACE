@@ -1,1 +1,55 @@
-{"flutter":{"platforms":{"android":{"default":{"projectId":"soln-18a8c","appId":"1:745740025674:android:c41055b69580b762e3cbb3","fileOutput":"android/app/google-services.json"}},"ios":{"default":{"projectId":"soln-18a8c","appId":"1:745740025674:ios:320ffc2514aea46fe3cbb3","uploadDebugSymbols":false,"fileOutput":"ios/Runner/GoogleService-Info.plist"}},"dart":{"lib/firebase_options.dart":{"projectId":"soln-18a8c","configurations":{"android":"1:745740025674:android:c41055b69580b762e3cbb3","ios":"1:745740025674:ios:320ffc2514aea46fe3cbb3"}}}}}}
+{
+  "hosting": {
+    "public": "build/web",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ],
+    "headers": [
+      {
+        "source": "**/*.@(js|css|woff2|woff|ttf|eot|svg|png|jpg|jpeg|gif|ico|webp)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=31536000, immutable"
+          }
+        ]
+      }
+    ]
+  },
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "soln-18a8c",
+          "appId": "1:745740025674:android:c41055b69580b762e3cbb3",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "ios": {
+        "default": {
+          "projectId": "soln-18a8c",
+          "appId": "1:745740025674:ios:320ffc2514aea46fe3cbb3",
+          "uploadDebugSymbols": false,
+          "fileOutput": "ios/Runner/GoogleService-Info.plist"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "soln-18a8c",
+          "configurations": {
+            "android": "1:745740025674:android:c41055b69580b762e3cbb3",
+            "ios": "1:745740025674:ios:320ffc2514aea46fe3cbb3"
+          }
+        }
+      }
+    }
+  }
+}

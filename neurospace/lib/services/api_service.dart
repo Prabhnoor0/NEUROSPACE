@@ -5,9 +5,16 @@ import 'dart:convert';
 import 'dart:io' show Platform;
 import 'package:http/http.dart' as http;
 
+/// Deployed backend URL (Render)
+const String _kRenderUrl = 'https://neurospace-kky9.onrender.com';
+
 class ApiService {
   // Android emulator uses 10.0.2.2 to reach host; iOS simulator uses localhost
+  // Web/production uses the deployed Render URL
   static String get _baseUrl {
+    if (kIsWeb) {
+      return _kRenderUrl;
+    }
     if (Platform.isAndroid) {
       return 'http://10.0.2.2:8000';
     } else {

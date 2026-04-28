@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:http/http.dart' as http;
@@ -45,6 +46,9 @@ class _OverlayScreenState extends State<OverlayScreen> {
 
   // ── Backend URL ──────────────────────────────────────
   List<String> get _baseUrls {
+    if (kIsWeb) {
+      return const ['https://neurospace-kky9.onrender.com'];
+    }
     if (Platform.isAndroid) {
       return const ['http://10.0.2.2:8000', 'http://10.0.2.2:8001'];
     }

@@ -35,6 +35,9 @@ class AssistantActionEngine {
   const AssistantActionEngine();
 
   List<String> _baseUrls() {
+    if (kIsWeb) {
+      return const ['https://neurospace-kky9.onrender.com'];
+    }
     return const [
       'http://10.0.2.2:8000',
       'http://10.0.2.2:8001',
