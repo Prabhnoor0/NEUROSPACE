@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException
 from models.schemas import (
     SimplifyRequest,
     SimplifyResponse,
+    SummaryResponse,
     ImageAnalyzeRequest,
     LessonModule,
     LessonResponse,
@@ -64,13 +65,24 @@ async def simplify_text(request: SimplifyRequest):
         )
 
 
-@router.post("/summarize", response_model=SimplifyResponse)
+@router.post("/summarize", response_model=SummaryResponse)
 async def summarize_text(request: SimplifyRequest):
     """
     Dedicated summarize endpoint for assistant quick actions.
-    Currently uses same adaptive simplify pipeline for concise output.
+    Uses adaptive summary pipeline for concise output.
     """
-    return await simplify_text(request)
+    try:
+        summary_data = await gemini_service.summarize_text(
+            text=request.text,
+            profile=request.user_profile.value,
+        )
+        return SummaryResponse(**summary_data)
+    except Exception as e:
+        logger.error(f"Text summarization failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to summarize text: {str(e)}"
+        )
 
 
 # ============================================

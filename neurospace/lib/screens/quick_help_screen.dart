@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../providers/neuro_theme_provider.dart';
+import '../services/location_service.dart';
 import 'maps_screen.dart';
 
 class QuickHelpScreen extends StatefulWidget {
@@ -41,25 +42,15 @@ class _QuickHelpScreenState extends State<QuickHelpScreen> {
     setState(() => _contact = value);
   }
 
+  /// Get device location using the centralized LocationService.
+  /// Shows permission dialogs automatically if needed.
   Future<Position?> _ensureLocation() async {
-    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) return null;
-
-    var permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
+    if (!mounted) return _position;
+    final pos = await LocationService.getCurrentLocation(context);
+    if (pos != null && mounted) {
+      setState(() => _position = pos);
     }
-    if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
-      return null;
-    }
-
-    try {
-      final p = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
-      setState(() => _position = p);
-      return p;
-    } catch (_) {
-      return null;
-    }
+    return pos ?? _position;
   }
 
   Future<void> _openNearbyHospitals() async {
@@ -67,10 +58,19 @@ class _QuickHelpScreenState extends State<QuickHelpScreen> {
     final pos = await _ensureLocation();
     setState(() => _loading = false);
 
-    final q = pos == null
-        ? 'nearby hospital'
-        : 'hospital near ${pos.latitude},${pos.longitude}';
-    final uri = Uri.parse('https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(q)}');
+    final Uri uri;
+    if (pos != null) {
+      // Use @lat,lng,zoom format — this centers Google Maps on the actual
+      // device coordinates and searches "hospital" in that area.
+      uri = Uri.parse(
+        'https://www.google.com/maps/search/hospital/@${pos.latitude},${pos.longitude},15z',
+      );
+    } else {
+      // Fallback: generic search (will use Google Maps' own location)
+      uri = Uri.parse(
+        'https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent("hospital near me")}',
+      );
+    }
     await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 

@@ -308,6 +308,82 @@ def _fallback_simplified_text(text: str) -> dict:
     }
 
 
+async def summarize_text(text: str, profile: str, source_type: str = "page") -> dict:
+    """
+    Summarize text into a clean, structured JSON format for the UI.
+    """
+    prompt_config = PROFILE_PROMPTS.get(profile, PROFILE_PROMPTS["ADHD"])
+    system_prompt = prompt_config["system"]
+
+    summarize_prompt = f"""{system_prompt}
+
+The user wants a clean, premium summary of the following text.
+Please read it and provide a structured JSON response.
+
+TEXT TO SUMMARIZE:
+\"\"\"
+{text}
+\"\"\"
+
+Return ONLY a valid JSON object matching this schema exactly. Do not use markdown backticks around the JSON.
+{{
+  "title": "A short, engaging title",
+  "summary": "A clean high-level summary paragraph. No markdown formatting like **bold**.",
+  "key_points": ["Point 1 without markdown bullets", "Point 2", "Point 3"],
+  "highlights": ["A notable quote or insight 1", "Insight 2"],
+  "tone": "e.g., Informative, Persuasive, Technical",
+  "confidence": 0.95,
+  "reading_time": "e.g., 2 min read",
+  "action_hint": "e.g., Good for a quick overview",
+  "source_type": "{source_type}"
+}}
+"""
+
+    # Attempt 1: Gemini
+    summary_data = invoke_gemini_json(
+        prompt=summarize_prompt,
+        task_name="text_summarization",
+        temperature=0.3,
+    )
+    if summary_data and "summary" in summary_data:
+        return summary_data
+
+    # Attempt 2: Groq fallback
+    logger.warning("Gemini summarize failed. Trying Groq fallback...")
+    groq_messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": summarize_prompt},
+    ]
+    groq_data = invoke_groq_json(
+        messages=groq_messages,
+        task_name="text_summarization_groq",
+        temperature=0.3,
+    )
+    if groq_data and "summary" in groq_data:
+        return groq_data
+
+    logger.error("All summarize model attempts failed. Returning local fallback.")
+    return _fallback_summary(text, source_type)
+
+
+def _fallback_summary(text: str, source_type: str) -> dict:
+    cleaned = " ".join(text.split())
+    preview = cleaned[:200]
+    if len(cleaned) > 200:
+        preview += "..."
+    return {
+        "title": "Basic Summary",
+        "summary": preview or "No text provided.",
+        "key_points": ["Backend AI is currently busy", "Here is a raw preview of the content"],
+        "highlights": [],
+        "tone": "Neutral",
+        "confidence": 0.5,
+        "reading_time": "1 min read",
+        "action_hint": "Try again later for a full summary",
+        "source_type": source_type
+    }
+
+
 # ============================================
 # Image Analysis (Gemini Vision)
 # ============================================

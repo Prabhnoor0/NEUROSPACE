@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 
 /**
  * NeuroSpace Accessibility Service
@@ -24,6 +25,25 @@ class NeuroAccessibilityService : AccessibilityService() {
         private const val PREFS_NAME = "FlutterSharedPreferences"
         private const val KEY_SCREEN_TEXT = "flutter.neuro_screen_text"
         private const val KEY_SERVICE_ACTIVE = "flutter.neuro_accessibility_active"
+        private const val KEY_SOURCE_PACKAGE = "flutter.neuro_source_package"
+
+        /** Packages to completely skip — never read text from these */
+        private val BLOCKED_PACKAGES = setOf(
+            "com.neurospace.neurospace",      // Our own overlay
+            "com.android.systemui",           // Status bar, notifications, quick settings
+            "android",                        // System framework windows
+            "com.android.launcher",           // Home screen launcher
+            "com.android.launcher3",          // AOSP launcher
+            "com.google.android.apps.nexuslauncher", // Pixel launcher
+            "com.samsung.android.launcher",   // Samsung launcher
+        )
+
+        /** Window types that should be skipped */
+        private val BLOCKED_WINDOW_TYPES = setOf(
+            AccessibilityWindowInfo.TYPE_SYSTEM,           // System-level windows (status bar)
+            AccessibilityWindowInfo.TYPE_INPUT_METHOD,      // Keyboard windows
+            AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY, // Accessibility overlays
+        )
     }
 
     private lateinit var prefs: SharedPreferences
@@ -39,7 +59,8 @@ class NeuroAccessibilityService : AccessibilityService() {
                          AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
             flags = AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
-                    AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
+                    AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
+                    AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
             notificationTimeout = 500 // ms debounce
         }
         serviceInfo = info
@@ -52,13 +73,53 @@ class NeuroAccessibilityService : AccessibilityService() {
         when (event.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
-                val rootNode = rootInActiveWindow ?: return
                 val textBuilder = StringBuilder()
-                extractText(rootNode, textBuilder)
+                var sourcePackage = ""
+
+                // Get all windows on the screen
+                val activeWindows = windows ?: return
+                var foundAppText = false
+
+                for (window in activeWindows) {
+                    // Skip system-level window types (status bar, keyboard, etc.)
+                    if (window.type in BLOCKED_WINDOW_TYPES) {
+                        continue
+                    }
+
+                    val rootNode = window.root ?: continue
+                    val pkg = rootNode.packageName?.toString() ?: ""
+
+                    // Skip blocked packages (overlay, systemUI, launchers)
+                    if (pkg in BLOCKED_PACKAGES) {
+                        rootNode.recycle()
+                        continue
+                    }
+
+                    // Only read from APPLICATION type windows (real apps)
+                    if (window.type == AccessibilityWindowInfo.TYPE_APPLICATION) {
+                        extractText(rootNode, textBuilder)
+                        if (sourcePackage.isEmpty() && pkg.isNotEmpty()) {
+                            sourcePackage = pkg
+                        }
+                        foundAppText = true
+                    }
+
+                    rootNode.recycle()
+                }
 
                 val screenText = textBuilder.toString().trim()
-                if (screenText.length > 20) {
-                    prefs.edit().putString(KEY_SCREEN_TEXT, screenText).apply()
+                if (foundAppText && screenText.isNotEmpty()) {
+                    // Normalize reading order (remove duplicate lines and excessive breaks)
+                    val normalizedText = screenText.lines()
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() }
+                        .distinct()
+                        .joinToString("\n")
+
+                    prefs.edit()
+                        .putString(KEY_SCREEN_TEXT, normalizedText)
+                        .putString(KEY_SOURCE_PACKAGE, sourcePackage)
+                        .apply()
                 }
             }
         }

@@ -36,6 +36,8 @@ class _OverlayScreenState extends State<OverlayScreen> {
   bool _isLoading = false;
   String _resultText = '';
   String _clipboardText = '';
+  Map<String, dynamic>? _summaryData;
+  String _contentSource = '';
 
   // ── Audio ────────────────────────────────────────────
   final AudioPlayer _audioPlayer = AudioPlayer();
@@ -44,10 +46,7 @@ class _OverlayScreenState extends State<OverlayScreen> {
   // ── Backend URL ──────────────────────────────────────
   List<String> get _baseUrls {
     if (Platform.isAndroid) {
-      return const [
-        'http://10.0.2.2:8000',
-        'http://10.0.2.2:8001',
-      ];
+      return const ['http://10.0.2.2:8000', 'http://10.0.2.2:8001'];
     }
     return const [
       'http://localhost:8000',
@@ -75,9 +74,11 @@ class _OverlayScreenState extends State<OverlayScreen> {
             .timeout(const Duration(seconds: 30));
         return response;
       } catch (e) {
+        debugPrint('Backend error for $baseUrl: $e');
         lastError = e;
       }
     }
+    debugPrint('All backend URLs failed. Last error: $lastError');
     throw lastError ?? Exception('No backend URL could be reached');
   }
 
@@ -132,6 +133,7 @@ class _OverlayScreenState extends State<OverlayScreen> {
       _isLoading = false;
       _resultText = '';
       _clipboardText = '';
+      _summaryData = null;
       _isPlaying = false;
     });
     try {
@@ -154,13 +156,28 @@ class _OverlayScreenState extends State<OverlayScreen> {
   //  HELPERS
   // ══════════════════════════════════════════════════════
 
+  /// Fetches FRESH clipboard text every time — no caching.
   Future<String> _getClipboard() async {
     try {
       final data = await Clipboard.getData(Clipboard.kTextPlain);
-      return data?.text?.trim() ?? '';
-    } catch (_) {
+      final text = data?.text?.trim() ?? '';
+      debugPrint('[NeuroSpace] Fresh clipboard read: ${text.length} chars');
+      return text;
+    } catch (e) {
+      debugPrint('[NeuroSpace] Clipboard read failed: $e');
       return '';
     }
+  }
+
+  /// Resets all content state before starting a new action.
+  /// Prevents stale summaryData / resultText from leaking.
+  void _clearContentState() {
+    _resultText = '';
+    _clipboardText = '';
+    _summaryData = null;
+    _contentSource = '';
+    _isLoading = false;
+    _isPlaying = false;
   }
 
   /// Reads the text captured by the NeuroAccessibilityService.
@@ -169,10 +186,206 @@ class _OverlayScreenState extends State<OverlayScreen> {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.reload(); // Force reload to get latest from native side
-      return prefs.getString('neuro_screen_text')?.trim() ?? '';
-    } catch (_) {
+      final raw = prefs.getString('neuro_screen_text')?.trim() ?? '';
+      final sourcePackage = prefs.getString('neuro_source_package') ?? 'unknown';
+      debugPrint('[NeuroSpace] Raw screen text from $sourcePackage: ${raw.length} chars');
+      final cleaned = _filterAllNoise(raw);
+      debugPrint('[NeuroSpace] After filtering: ${cleaned.length} chars');
+      return cleaned;
+    } catch (e) {
+      debugPrint('[NeuroSpace] _getScreenText failed: $e');
       return '';
     }
+  }
+
+  // ────────────────────────────────────────────────
+  //  NOISE FILTER: Overlay UI labels
+  // ────────────────────────────────────────────────
+
+  /// Overlay UI labels that must never appear in "page content".
+  static const _overlayNoisePatterns = [
+    'NeuroSpace',
+    'ADHD MODE',
+    'Tap an action below',
+    'Tap a feature to start using it',
+    'Read Aloud',
+    'Simplify',
+    'Summarize',
+    'Easy Read',
+    'Scan / Open',
+    'Explain Screen',
+    'Simplify Clipboard',
+    'Summarize Clipboard',
+    'Listen to text',
+    'Rewrite in easy words',
+    'Short summary',
+    'Digestible bullets',
+    'OCR + reader',
+    'Summarize visible content',
+    'Back',
+    'Minimize',
+    'Close',
+    'Search Wikipedia, topics, anything...',
+    'Page Summary',
+    'Reading current page',
+    'Reading clipboard text',
+    'No content detected',
+    'Accessibility Service not enabled',
+  ];
+
+  /// Check if a line is overlay UI text.
+  bool _isOverlayUiLine(String line) {
+    for (final noise in _overlayNoisePatterns) {
+      if (line == noise) return true;
+    }
+    // Also catch partial overlay matches
+    if (line.startsWith('📱') || line.startsWith('📋') ||
+        line.startsWith('⚙️') || line.startsWith('⚠️') ||
+        line.startsWith('📄')) return true;
+    return false;
+  }
+
+  // ────────────────────────────────────────────────
+  //  NOISE FILTER: System UI / notification chrome
+  // ────────────────────────────────────────────────
+
+  /// System UI text patterns to reject.
+  static const _systemNoiseExact = [
+    'Android System notification',
+    'Android System',
+    'Silent notifications',
+    'Notification shade',
+    'Quick settings',
+    'Now Playing',
+    'Paused',
+    'Phone signal',
+    'Phone signal full',
+    'Mobile data',
+    'Wi-Fi signal',
+    'Wi-Fi signal full',
+    'Airplane mode',
+    'Battery',
+    'Battery full',
+    'Battery charging',
+    'Do Not Disturb',
+    'Silent mode',
+    'Alarm set',
+    'Location active',
+    'Bluetooth connected',
+    'NFC on',
+    'VPN active',
+    'Screen rotation',
+    'Cast',
+    'Flashlight',
+    'Auto-rotate',
+    'Brightness',
+    'Settings',
+    'No SIM card',
+    'Emergency calls only',
+    'Charging',
+    'USB debugging connected',
+    'neurospace is running in the background',
+    'NeuroSpace is running in the background',
+    'Tap for more information',
+    'Tap for more options',
+    'Tap to turn off',
+    'System UI',
+    'Status bar',
+    'Navigation bar',
+    'Home',
+    'Recent apps',
+    'Overview',
+    'Back button',
+  ];
+
+  /// Regex patterns for system UI noise.
+  static final _systemNoiseRegexes = [
+    RegExp(r'^\d{1,2}:\d{2}$'),                // Time like "12:45"
+    RegExp(r'^\d{1,2}:\d{2}\s*(AM|PM)$', caseSensitive: false), // 12:45 PM
+    RegExp(r'^\d{1,3}%$'),                      // Battery "85%"
+    RegExp(r'^Battery\s+\d{1,3}%'),              // "Battery 85%"
+    RegExp(r'^\d{1,2}/\d{1,2}/\d{2,4}$'),       // Date "4/28/26"
+    RegExp(r'^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)', caseSensitive: false), // Day names
+    RegExp(r'^\d+ notifications?$', caseSensitive: false), // "3 notifications"
+    RegExp(r'^(Charging|Charged|Battery saver)', caseSensitive: false),
+    RegExp(r'^(Wi-Fi|WiFi|LTE|5G|4G|3G|H\+|Edge|No service)', caseSensitive: false),
+  ];
+
+  /// Check if a line is system UI noise.
+  bool _isSystemUiLine(String line) {
+    // Exact matches
+    for (final noise in _systemNoiseExact) {
+      if (line == noise) return true;
+    }
+    // Regex matches
+    for (final regex in _systemNoiseRegexes) {
+      if (regex.hasMatch(line)) return true;
+    }
+    // Lines that are purely numeric or symbols (button IDs, etc.)
+    if (RegExp(r'^[\d\s\-\.\,\:\;\/\%\+\*]+$').hasMatch(line)) return true;
+    return false;
+  }
+
+  // ────────────────────────────────────────────────
+  //  COMBINED NOISE FILTER
+  // ────────────────────────────────────────────────
+
+  /// Remove BOTH overlay UI labels AND system UI noise from captured text.
+  /// This is the main filter applied before any page summary / TTS action.
+  String _filterAllNoise(String text) {
+    if (text.isEmpty) return text;
+    final lines = text.split('\n');
+    int removed = 0;
+    final filtered = lines.where((line) {
+      final trimmed = line.trim();
+      if (trimmed.isEmpty) { removed++; return false; }
+      if (trimmed.length <= 3) { removed++; return false; }
+      if (_isOverlayUiLine(trimmed)) { removed++; return false; }
+      if (_isSystemUiLine(trimmed)) { removed++; return false; }
+      return true;
+    }).toList();
+    if (removed > 0) {
+      debugPrint('[NeuroSpace] Filtered $removed noise lines, ${filtered.length} lines remain');
+    }
+    return filtered.join('\n').trim();
+  }
+
+  /// Normalize text for clean line-by-line reading.
+  String _normalizeReadingOrder(String text) {
+    if (text.isEmpty) return text;
+    final lines = text.split('\n')
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+    // Remove consecutive duplicates
+    final deduped = <String>[];
+    for (final line in lines) {
+      if (deduped.isEmpty || deduped.last != line) {
+        deduped.add(line);
+      }
+    }
+    return deduped.join('\n');
+  }
+
+  /// Get readable content with source priority:
+  /// 1. Accessibility screen text (from background app)
+  /// 2. Clipboard text
+  /// Returns (text, source label).
+  Future<(String, String)> _getReadableContent() async {
+    // Priority 1: Accessibility screen text from the foreground app
+    final isActive = await _isAccessibilityActive();
+    if (isActive) {
+      final screenText = await _getScreenText();
+      if (screenText.length >= 10) {
+        return (_normalizeReadingOrder(screenText), 'current page');
+      }
+    }
+    // Priority 2: Clipboard
+    final clipboard = await _getClipboard();
+    if (clipboard.length >= 10) {
+      return (_normalizeReadingOrder(clipboard), 'clipboard');
+    }
+    return ('', 'none');
   }
 
   /// Checks if the accessibility service is active.
@@ -201,9 +414,10 @@ class _OverlayScreenState extends State<OverlayScreen> {
         String display = '';
         if (modules.isNotEmpty) {
           for (final mod in modules) {
-            final title = mod['title'] ?? '';
             final content = mod['content'] ?? '';
-            display += '### $title\n$content\n\n';
+            if (content.toString().trim().isNotEmpty) {
+              display += '$content\n\n';
+            }
           }
         } else if (simplified.isNotEmpty) {
           display = simplified;
@@ -230,15 +444,52 @@ class _OverlayScreenState extends State<OverlayScreen> {
     }
   }
 
+  Future<void> _sendToSummarize(String text, String sourceType) async {
+    debugPrint('[NeuroSpace] _sendToSummarize: source=$sourceType, textLen=${text.length}');
+    try {
+      final response = await _postToBackend('/api/summarize', {
+        'text': text,
+        'user_profile': 'ADHD',
+      });
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        debugPrint('[NeuroSpace] Summarize success: title=${data['title']}');
+        setState(() {
+          _summaryData = data;
+          _isLoading = false;
+        });
+      } else {
+        debugPrint('[NeuroSpace] Summarize failed: status=${response.statusCode}');
+        setState(() {
+          _resultText = '⚠️ Backend error (${response.statusCode}). Try again.';
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('[NeuroSpace] Summarize error: $e');
+      setState(() {
+        _resultText =
+            '⚠️ Could not reach NeuroSpace backend.\nMake sure it\'s running on ${_baseUrls.join(' or ')}';
+        _isLoading = false;
+      });
+    }
+  }
+
   // ══════════════════════════════════════════════════════
   //  ACTION: SUMMARIZE CURRENT PAGE
   // ══════════════════════════════════════════════════════
 
   Future<void> _handleSummarizePage() async {
+    // Clear stale state FIRST
+    setState(() {
+      _clearContentState();
+      _activeAction = _ActionType.summarizePage;
+    });
+
     final isActive = await _isAccessibilityActive();
     if (!isActive) {
       setState(() {
-        _activeAction = _ActionType.summarizePage;
         _resultText =
             '⚙️ Accessibility Service not enabled\n\n'
             'To summarize any page, please enable NeuroSpace in:\n\n'
@@ -251,9 +502,9 @@ class _OverlayScreenState extends State<OverlayScreen> {
     }
 
     final screenText = await _getScreenText();
+    debugPrint('[NeuroSpace] Page summarize: screenText=${screenText.length} chars');
     if (screenText.isEmpty || screenText.length < 20) {
       setState(() {
-        _activeAction = _ActionType.summarizePage;
         _resultText =
             '📄 No content detected on screen.\n\nMake sure there is text visible in the app behind this overlay.';
         _isLoading = false;
@@ -263,12 +514,12 @@ class _OverlayScreenState extends State<OverlayScreen> {
     }
 
     setState(() {
-      _activeAction = _ActionType.summarizePage;
       _clipboardText = screenText;
+      _contentSource = 'current page';
       _isLoading = true;
     });
     _expandToResult();
-    await _sendToSimplify(screenText);
+    await _sendToSummarize(screenText, 'page');
   }
 
   // ══════════════════════════════════════════════════════
@@ -276,12 +527,20 @@ class _OverlayScreenState extends State<OverlayScreen> {
   // ══════════════════════════════════════════════════════
 
   Future<void> _handleSummarizeClipboard() async {
+    // Clear ALL stale state before doing anything
+    setState(() {
+      _clearContentState();
+      _activeAction = _ActionType.summarizeClipboard;
+    });
+
+    // Fetch FRESH clipboard — no fallback to accessibility text
     final text = await _getClipboard();
+    debugPrint('[NeuroSpace] Clipboard summarize: "${text.length > 50 ? text.substring(0, 50) : text}..."');
+
     if (text.isEmpty || text.length < 10) {
       setState(() {
-        _activeAction = _ActionType.summarizeClipboard;
         _resultText =
-            '📋 No text on clipboard!\n\nHighlight and copy some text in any app, then tap Summarize again.';
+            '📋 No text copied to clipboard.\n\nHighlight and copy some text in any app, then tap Summarize again.';
         _isLoading = false;
       });
       _expandToResult();
@@ -289,21 +548,29 @@ class _OverlayScreenState extends State<OverlayScreen> {
     }
 
     setState(() {
-      _activeAction = _ActionType.summarizeClipboard;
       _clipboardText = text;
+      _contentSource = 'clipboard';
       _isLoading = true;
     });
     _expandToResult();
-    await _sendToSimplify(text);
+    await _sendToSummarize(text, 'clipboard');
   }
 
   Future<void> _handleSimplifyClipboard() async {
+    // Clear ALL stale state before doing anything
+    setState(() {
+      _clearContentState();
+      _activeAction = _ActionType.simplifyClipboard;
+    });
+
+    // Fetch FRESH clipboard — no fallback
     final text = await _getClipboard();
+    debugPrint('[NeuroSpace] Clipboard simplify: "${text.length > 50 ? text.substring(0, 50) : text}..."');
+
     if (text.isEmpty || text.length < 10) {
       setState(() {
-        _activeAction = _ActionType.simplifyClipboard;
         _resultText =
-            '📋 No text on clipboard!\n\nCopy some text, then tap Simplify again.';
+            '📋 No text copied to clipboard.\n\nCopy some text, then tap Simplify again.';
         _isLoading = false;
       });
       _expandToResult();
@@ -311,8 +578,8 @@ class _OverlayScreenState extends State<OverlayScreen> {
     }
 
     setState(() {
-      _activeAction = _ActionType.simplifyClipboard;
       _clipboardText = text;
+      _contentSource = 'clipboard';
       _isLoading = true;
     });
     _expandToResult();
@@ -320,14 +587,19 @@ class _OverlayScreenState extends State<OverlayScreen> {
   }
 
   Future<void> _handleEasyRead() async {
-    String text = await _getScreenText();
-    if (text.isEmpty || text.length < 10) {
-      text = await _getClipboard();
-    }
+    // Clear stale state first
+    setState(() {
+      _clearContentState();
+      _activeAction = _ActionType.easyRead;
+    });
 
-    if (text.isEmpty || text.length < 10) {
+    final (text, source) = await _getReadableContent();
+    debugPrint('[NeuroSpace] EasyRead: source=$source, textLen=${text.length}');
+
+    if (text.isEmpty) {
       setState(() {
         _activeAction = _ActionType.easyRead;
+        _contentSource = '';
         _resultText =
             '📋 No content available for Easy Read.\n\nTry copying text first.';
         _isLoading = false;
@@ -369,19 +641,20 @@ class _OverlayScreenState extends State<OverlayScreen> {
   // ══════════════════════════════════════════════════════
 
   Future<void> _handleTTS() async {
-    // Try screen text first, fall back to clipboard
-    String text = '';
-    final isAccessibilityActive = await _isAccessibilityActive();
-    if (isAccessibilityActive) {
-      text = await _getScreenText();
-    }
-    if (text.isEmpty || text.length < 10) {
-      text = await _getClipboard();
-    }
+    // Clear stale state first
+    setState(() {
+      _clearContentState();
+      _activeAction = _ActionType.tts;
+    });
 
-    if (text.isEmpty || text.length < 10) {
+    // Use the unified content pipeline — never reads overlay text
+    final (text, source) = await _getReadableContent();
+    debugPrint('[NeuroSpace] TTS: source=$source, textLen=${text.length}');
+
+    if (text.isEmpty) {
       setState(() {
         _activeAction = _ActionType.tts;
+        _contentSource = '';
         _resultText =
             '📋 No content to read!\n\nEither enable the accessibility service to auto-detect screen text, or copy text to your clipboard.';
         _isLoading = false;
@@ -393,6 +666,7 @@ class _OverlayScreenState extends State<OverlayScreen> {
     setState(() {
       _activeAction = _ActionType.tts;
       _clipboardText = text;
+      _contentSource = source;
       _isLoading = true;
     });
     _expandToResult();
@@ -538,7 +812,10 @@ class _OverlayScreenState extends State<OverlayScreen> {
                 decoration: BoxDecoration(
                   color: _darkBg,
                   borderRadius: BorderRadius.circular(24),
-                  border: Border.all(color: _purple.withValues(alpha: 0.25), width: 1.5),
+                  border: Border.all(
+                    color: _purple.withValues(alpha: 0.25),
+                    width: 1.5,
+                  ),
                   boxShadow: [
                     BoxShadow(
                       color: Colors.black.withValues(alpha: 0.5),
@@ -554,40 +831,104 @@ class _OverlayScreenState extends State<OverlayScreen> {
                       Row(
                         children: [
                           Container(
-                            width: 28, height: 28,
+                            width: 28,
+                            height: 28,
                             decoration: const BoxDecoration(
                               shape: BoxShape.circle,
-                              gradient: LinearGradient(colors: [_purple, _cyan]),
+                              gradient: LinearGradient(
+                                colors: [_purple, _cyan],
+                              ),
                             ),
-                            child: const Icon(Icons.psychology_rounded, color: Colors.white, size: 15),
+                            child: const Icon(
+                              Icons.psychology_rounded,
+                              color: Colors.white,
+                              size: 15,
+                            ),
                           ),
                           const SizedBox(width: 10),
-                          const Text('NeuroSpace', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Colors.white)),
+                          const Text(
+                            'NeuroSpace',
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w800,
+                              color: Colors.white,
+                            ),
+                          ),
                           const Spacer(),
                           GestureDetector(
                             onTap: _collapseToBubble,
                             child: Container(
-                              width: 26, height: 26,
-                              decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.08), borderRadius: BorderRadius.circular(8)),
-                              child: const Icon(Icons.close_rounded, color: Colors.white54, size: 15),
+                              width: 26,
+                              height: 26,
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.08),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Icon(
+                                Icons.close_rounded,
+                                color: Colors.white54,
+                                size: 15,
+                              ),
                             ),
                           ),
                         ],
                       ),
                       const SizedBox(height: 4),
-                      Text('Tap an action below', style: TextStyle(fontSize: 10.5, color: Colors.white.withValues(alpha: 0.35))),
+                      Text(
+                        'Tap an action below',
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          color: Colors.white.withValues(alpha: 0.35),
+                        ),
+                      ),
                       const SizedBox(height: 12),
-                      _ActionButton(icon: Icons.article_rounded, label: 'Explain Screen', subtitle: 'Summarize visible content', gradient: const [Color(0xFF7C4DFF), Color(0xFF651FFF)], onTap: _handleSummarizePage),
+                      _ActionButton(
+                        icon: Icons.article_rounded,
+                        label: 'Explain Screen',
+                        subtitle: 'Summarize visible content',
+                        gradient: const [Color(0xFF7C4DFF), Color(0xFF651FFF)],
+                        onTap: _handleSummarizePage,
+                      ),
                       const SizedBox(height: 6),
-                      _ActionButton(icon: Icons.text_fields_rounded, label: 'Simplify Clipboard', subtitle: 'Rewrite in easy words', gradient: const [Color(0xFF5E35B1), Color(0xFF4527A0)], onTap: _handleSimplifyClipboard),
+                      _ActionButton(
+                        icon: Icons.text_fields_rounded,
+                        label: 'Simplify Clipboard',
+                        subtitle: 'Rewrite in easy words',
+                        gradient: const [Color(0xFF5E35B1), Color(0xFF4527A0)],
+                        onTap: _handleSimplifyClipboard,
+                      ),
                       const SizedBox(height: 6),
-                      _ActionButton(icon: Icons.content_paste_rounded, label: 'Summarize Clipboard', subtitle: 'Short summary', gradient: const [Color(0xFF448AFF), Color(0xFF2962FF)], onTap: _handleSummarizeClipboard),
+                      _ActionButton(
+                        icon: Icons.content_paste_rounded,
+                        label: 'Summarize Clipboard',
+                        subtitle: 'Short summary',
+                        gradient: const [Color(0xFF448AFF), Color(0xFF2962FF)],
+                        onTap: _handleSummarizeClipboard,
+                      ),
                       const SizedBox(height: 6),
-                      _ActionButton(icon: Icons.format_size_rounded, label: 'Easy Read', subtitle: 'Digestible bullets', gradient: const [Color(0xFF4CAF50), Color(0xFF2E7D32)], onTap: _handleEasyRead),
+                      _ActionButton(
+                        icon: Icons.format_size_rounded,
+                        label: 'Easy Read',
+                        subtitle: 'Digestible bullets',
+                        gradient: const [Color(0xFF4CAF50), Color(0xFF2E7D32)],
+                        onTap: _handleEasyRead,
+                      ),
                       const SizedBox(height: 6),
-                      _ActionButton(icon: Icons.volume_up_rounded, label: 'Read Aloud', subtitle: 'Listen to text', gradient: const [Color(0xFF00BCD4), Color(0xFF0097A7)], onTap: _handleTTS),
+                      _ActionButton(
+                        icon: Icons.volume_up_rounded,
+                        label: 'Read Aloud',
+                        subtitle: 'Listen to text',
+                        gradient: const [Color(0xFF00BCD4), Color(0xFF0097A7)],
+                        onTap: _handleTTS,
+                      ),
                       const SizedBox(height: 6),
-                      _ActionButton(icon: Icons.camera_alt_rounded, label: 'Scan / Open', subtitle: 'OCR + reader', gradient: const [Color(0xFFFF7043), Color(0xFFE64A19)], onTap: _handleOpenInApp),
+                      _ActionButton(
+                        icon: Icons.camera_alt_rounded,
+                        label: 'Scan / Open',
+                        subtitle: 'OCR + reader',
+                        gradient: const [Color(0xFFFF7043), Color(0xFFE64A19)],
+                        onTap: _handleOpenInApp,
+                      ),
                     ],
                   ),
                 ),
@@ -611,19 +952,19 @@ class _OverlayScreenState extends State<OverlayScreen> {
     final title = isTTS
         ? '🔊 Read Aloud'
         : isPageSummary
-            ? '📄 Page Summary'
+        ? '📄 Page Summary'
         : isSimplify
-          ? '✨ Simplified Text'
-          : isEasyRead
-            ? '🔤 Easy Read'
-            : '🧠 Text Summary';
+        ? '✨ Simplified Text'
+        : isEasyRead
+        ? '🔤 Easy Read'
+        : '🧠 Text Summary';
     final accentColor = isTTS
-      ? _cyan
-      : isEasyRead
+        ? _cyan
+        : isEasyRead
         ? const Color(0xFF4CAF50)
         : isSimplify
-          ? const Color(0xFF5E35B1)
-          : _purple;
+        ? const Color(0xFF5E35B1)
+        : _purple;
 
     return Container(
       margin: const EdgeInsets.only(top: 80, left: 16, right: 16, bottom: 40),
@@ -631,7 +972,10 @@ class _OverlayScreenState extends State<OverlayScreen> {
       decoration: BoxDecoration(
         color: _darkBg,
         borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: accentColor.withValues(alpha: 0.3), width: 1.5),
+        border: Border.all(
+          color: accentColor.withValues(alpha: 0.3),
+          width: 1.5,
+        ),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withValues(alpha: 0.5),
@@ -656,12 +1000,12 @@ class _OverlayScreenState extends State<OverlayScreen> {
                   isTTS
                       ? Icons.volume_up_rounded
                       : isPageSummary
-                          ? Icons.article_rounded
-                        : isSimplify
-                          ? Icons.text_fields_rounded
-                          : isEasyRead
-                            ? Icons.format_size_rounded
-                          : Icons.auto_awesome_rounded,
+                      ? Icons.article_rounded
+                      : isSimplify
+                      ? Icons.text_fields_rounded
+                      : isEasyRead
+                      ? Icons.format_size_rounded
+                      : Icons.auto_awesome_rounded,
                   color: accentColor,
                   size: 22,
                 ),
@@ -685,12 +1029,51 @@ class _OverlayScreenState extends State<OverlayScreen> {
                     color: Colors.white.withValues(alpha: 0.08),
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: const Icon(Icons.close_rounded,
-                      color: Colors.white60, size: 20),
+                  child: const Icon(
+                    Icons.close_rounded,
+                    color: Colors.white60,
+                    size: 20,
+                  ),
                 ),
               ),
             ],
           ),
+
+          // Source indicator
+          if (_contentSource.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: accentColor.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: accentColor.withValues(alpha: 0.15)),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    _contentSource == 'current page'
+                        ? Icons.phone_android_rounded
+                        : Icons.content_paste_rounded,
+                    size: 13,
+                    color: accentColor.withValues(alpha: 0.7),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    _contentSource == 'current page'
+                        ? 'Reading current page'
+                        : 'Reading clipboard text',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: accentColor.withValues(alpha: 0.7),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           const SizedBox(height: 20),
 
           // TTS playback controls
@@ -701,8 +1084,10 @@ class _OverlayScreenState extends State<OverlayScreen> {
               decoration: BoxDecoration(
                 color: _cardBg,
                 borderRadius: BorderRadius.circular(16),
-                border:
-                    Border.all(color: _cyan.withValues(alpha: 0.15), width: 1),
+                border: Border.all(
+                  color: _cyan.withValues(alpha: 0.15),
+                  width: 1,
+                ),
               ),
               child: Row(
                 children: [
@@ -765,8 +1150,11 @@ class _OverlayScreenState extends State<OverlayScreen> {
                       await _audioPlayer.stop();
                       setState(() => _isPlaying = false);
                     },
-                    child: Icon(Icons.stop_rounded,
-                        color: Colors.white.withValues(alpha: 0.5), size: 28),
+                    child: Icon(
+                      Icons.stop_rounded,
+                      color: Colors.white.withValues(alpha: 0.5),
+                      size: 28,
+                    ),
                   ),
                 ],
               ),
@@ -794,10 +1182,10 @@ class _OverlayScreenState extends State<OverlayScreen> {
                           isTTS
                               ? 'Generating audio...'
                               : isPageSummary
-                                  ? 'Reading & simplifying page...'
-                                : isSimplify
-                                  ? 'Simplifying copied text...'
-                                  : 'Simplifying text...',
+                              ? 'Reading & simplifying page...'
+                              : isSimplify
+                              ? 'Simplifying copied text...'
+                              : 'Simplifying text...',
                           style: TextStyle(
                             fontSize: 14,
                             color: Colors.white.withValues(alpha: 0.5),
@@ -820,20 +1208,78 @@ class _OverlayScreenState extends State<OverlayScreen> {
                           width: 1,
                         ),
                       ),
-                      child: Text(
-                        _resultText,
-                        style: TextStyle(
-                          fontSize: 16,
-                          height: 1.6,
-                          color: Colors.white.withValues(alpha: 0.85),
-                          letterSpacing: 0.2,
-                        ),
-                      ),
+                      child: _summaryData != null
+                          ? _buildSummaryContent(_summaryData!, accentColor)
+                          : Text(
+                              _resultText,
+                              style: TextStyle(
+                                fontSize: 16,
+                                height: 1.6,
+                                color: Colors.white.withValues(alpha: 0.85),
+                                letterSpacing: 0.2,
+                              ),
+                            ),
                     ),
                   ),
           ),
 
           const SizedBox(height: 16),
+
+          if (_summaryData != null && !_isLoading) ...[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                _buildSmallAction(
+                  Icons.volume_up_rounded,
+                  'Read Aloud',
+                  () async {
+                    setState(() {
+                      _activeAction = _ActionType.tts;
+                      _clipboardText = _summaryData!['summary'] ?? '';
+                      _isLoading = true;
+                    });
+                    try {
+                      final response = await _postToBackend(
+                        '/api/text-to-speech',
+                        {'text': _clipboardText, 'speed': 1.0},
+                      );
+                      if (response.statusCode == 200) {
+                        final dir = await getTemporaryDirectory();
+                        final file = File('${dir.path}/neuro_tts.mp3');
+                        await file.writeAsBytes(response.bodyBytes);
+                        await _audioPlayer.play(DeviceFileSource(file.path));
+                        setState(() {
+                          _isPlaying = true;
+                          _isLoading = false;
+                        });
+                        _audioPlayer.onPlayerComplete.listen((_) {
+                          if (mounted) setState(() => _isPlaying = false);
+                        });
+                      }
+                    } catch (_) {}
+                  },
+                  accentColor,
+                ),
+                _buildSmallAction(Icons.copy_rounded, 'Copy', () {
+                  Clipboard.setData(
+                    ClipboardData(text: _summaryData!['summary'] ?? ''),
+                  );
+                }, accentColor),
+                _buildSmallAction(
+                  Icons.open_in_new_rounded,
+                  'Reader',
+                  () async {
+                    await FlutterOverlayWindow.shareData(
+                      'open_reader:${_summaryData!['summary']}',
+                    );
+                    await FlutterOverlayWindow.closeOverlay();
+                  },
+                  accentColor,
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+          ],
 
           // Bottom action row
           Row(
@@ -848,6 +1294,8 @@ class _OverlayScreenState extends State<OverlayScreen> {
                       _isLoading = false;
                       _resultText = '';
                       _isPlaying = false;
+                      _contentSource = '';
+                      _summaryData = null;
                     });
                   },
                   child: Container(
@@ -859,8 +1307,11 @@ class _OverlayScreenState extends State<OverlayScreen> {
                     child: const Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Icon(Icons.arrow_back_rounded,
-                            color: Colors.white60, size: 18),
+                        Icon(
+                          Icons.arrow_back_rounded,
+                          color: Colors.white60,
+                          size: 18,
+                        ),
                         SizedBox(width: 6),
                         Text(
                           'Back',
@@ -888,8 +1339,11 @@ class _OverlayScreenState extends State<OverlayScreen> {
                     child: const Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Icon(Icons.minimize_rounded,
-                            color: Colors.redAccent, size: 18),
+                        Icon(
+                          Icons.minimize_rounded,
+                          color: Colors.redAccent,
+                          size: 18,
+                        ),
                         SizedBox(width: 6),
                         Text(
                           'Minimize',
@@ -905,6 +1359,188 @@ class _OverlayScreenState extends State<OverlayScreen> {
                 ),
               ),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+  // ─────────────────────────────────────────────────────
+  //  STRUCTURED SUMMARY VIEW
+  // ─────────────────────────────────────────────────────
+
+  Widget _buildSummaryContent(Map<String, dynamic> data, Color accentColor) {
+    final title = data['title'] as String? ?? 'Summary';
+    final summary = data['summary'] as String? ?? '';
+    final keyPoints =
+        (data['key_points'] as List?)?.map((e) => e.toString()).toList() ?? [];
+    final highlights =
+        (data['highlights'] as List?)?.map((e) => e.toString()).toList() ?? [];
+    final readingTime = data['reading_time'] as String? ?? '';
+    final tone = data['tone'] as String? ?? '';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (title.isNotEmpty &&
+            title != 'Summary' &&
+            title != 'Basic Summary') ...[
+          Text(
+            title,
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+              color: accentColor,
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
+        Text(
+          summary,
+          style: TextStyle(
+            fontSize: 16,
+            height: 1.5,
+            color: Colors.white.withValues(alpha: 0.9),
+          ),
+        ),
+        if (keyPoints.isNotEmpty) ...[
+          const SizedBox(height: 20),
+          const Text(
+            'Key Takeaways',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              color: Colors.white60,
+              letterSpacing: 0.5,
+            ),
+          ),
+          const SizedBox(height: 8),
+          ...keyPoints.map(
+            (kp) => Padding(
+              padding: const EdgeInsets.only(bottom: 8.0),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    margin: const EdgeInsets.only(top: 6, right: 10),
+                    width: 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      color: accentColor,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  Expanded(
+                    child: Text(
+                      kp,
+                      style: TextStyle(
+                        fontSize: 15,
+                        height: 1.4,
+                        color: Colors.white.withValues(alpha: 0.8),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+        if (highlights.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: accentColor.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: accentColor.withValues(alpha: 0.2)),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.format_quote_rounded, color: accentColor, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    highlights.first,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontStyle: FontStyle.italic,
+                      color: accentColor.withValues(alpha: 0.9),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+        if (readingTime.isNotEmpty || tone.isNotEmpty) ...[
+          const SizedBox(height: 20),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              if (readingTime.isNotEmpty)
+                _buildChip(Icons.timer_outlined, readingTime, accentColor),
+              if (tone.isNotEmpty)
+                _buildChip(Icons.mood_rounded, tone, accentColor),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildChip(IconData icon, String label, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.white.withValues(alpha: 0.6),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSmallAction(
+    IconData icon,
+    String label,
+    VoidCallback onTap,
+    Color color,
+  ) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.1),
+              shape: BoxShape.circle,
+              border: Border.all(color: color.withValues(alpha: 0.2)),
+            ),
+            child: Icon(icon, size: 20, color: color),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: Colors.white.withValues(alpha: 0.7),
+            ),
           ),
         ],
       ),
@@ -993,8 +1629,11 @@ class _ActionButton extends StatelessWidget {
                 ],
               ),
             ),
-            Icon(Icons.arrow_forward_ios_rounded,
-                color: Colors.white.withValues(alpha: 0.2), size: 13),
+            Icon(
+              Icons.arrow_forward_ios_rounded,
+              color: Colors.white.withValues(alpha: 0.2),
+              size: 13,
+            ),
           ],
         ),
       ),

@@ -189,6 +189,18 @@ class SimplifyResponse(BaseModel):
     audio_url: Optional[str] = None
 
 
+class SummaryResponse(BaseModel):
+    title: str
+    summary: str
+    key_points: List[str]
+    highlights: List[str]
+    tone: str
+    confidence: float
+    reading_time: str
+    action_hint: str
+    source_type: str
+
+
 class HealthResponse(BaseModel):
     status: str = "ok"
     version: str = "1.0.0"

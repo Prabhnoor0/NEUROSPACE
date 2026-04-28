@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/neuro_theme_provider.dart';
 import '../services/api_service.dart';
+import '../services/location_service.dart';
+
+/// Logging helper
+void _log(String msg) => debugPrint('[QuietMap] $msg');
 
 enum _PlacesViewMode { map, list }
 
@@ -24,7 +27,9 @@ class _QuietMapScreenState extends State<QuietMapScreen> {
   _PlacesViewMode _viewMode = _PlacesViewMode.map;
   int _selectedIndex = 0;
   bool _isLoading = true;
-  LatLng _currentLocation = const LatLng(37.7749, -122.4194); // Fallback
+  LatLng _currentLocation = const LatLng(28.6139, 77.2090); // Fallback: New Delhi
+  bool _locationAcquired = false;
+  String? _locationError;
 
   final Set<String> _activeFilters = <String>{};
   List<Map<String, dynamic>> _quietPlaces = [];
@@ -110,38 +115,25 @@ class _QuietMapScreenState extends State<QuietMapScreen> {
   }
 
   Future<void> _initLocationAndFetchPlaces() async {
-    bool serviceEnabled;
-    LocationPermission permission;
+    _log('Starting location acquisition via LocationService...');
 
-    serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
-      await _fetchPlaces(_currentLocation);
-      return;
-    }
+    if (!mounted) return;
 
-    permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) {
-        await _fetchPlaces(_currentLocation);
-        return;
+    final position = await LocationService.getCurrentLocation(context);
+
+    if (position != null) {
+      _currentLocation = LatLng(position.latitude, position.longitude);
+      _locationAcquired = true;
+      _locationError = null;
+      _log('GPS fix acquired: ${position.latitude}, ${position.longitude}');
+    } else {
+      _log('Location unavailable — using fallback: ${_currentLocation.latitude}, ${_currentLocation.longitude}');
+      if (!_locationAcquired) {
+        setState(() => _locationError = 'Location unavailable');
       }
     }
 
-    if (permission == LocationPermission.deniedForever) {
-      await _fetchPlaces(_currentLocation);
-      return;
-    }
-
-    try {
-      final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.medium,
-      );
-      _currentLocation = LatLng(position.latitude, position.longitude);
-    } catch (e) {
-      debugPrint('Error getting location: $e');
-    }
-
+    _log('Final location: ${_currentLocation.latitude}, ${_currentLocation.longitude} (acquired: $_locationAcquired)');
     await _fetchPlaces(_currentLocation);
   }
 
@@ -403,66 +395,143 @@ class _QuietMapScreenState extends State<QuietMapScreen> {
     );
   }
 
+  void _recenterOnMe() {
+    _mapController.move(_currentLocation, 14.0);
+  }
+
   Widget _buildMapMode(dynamic profile, List<Map<String, dynamic>> places) {
+    // Build place markers
+    final placeMarkers = places.asMap().entries.map((entry) {
+      final index = entry.key;
+      final place = entry.value;
+      final isSelected = index == _selectedIndex;
+
+      return Marker(
+        width: isSelected ? 48 : 36,
+        height: isSelected ? 48 : 36,
+        point: place['location'] as LatLng,
+        child: GestureDetector(
+          onTap: () => _onCardChanged(index),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            decoration: BoxDecoration(
+              color: isSelected ? profile.accentColor : profile.cardColor,
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: isSelected ? Colors.white : profile.accentColor.withValues(alpha: 0.45),
+                width: isSelected ? 3 : 1.5,
+              ),
+              boxShadow: isSelected
+                  ? [
+                      BoxShadow(
+                        color: profile.accentColor.withValues(alpha: 0.5),
+                        blurRadius: 12,
+                        spreadRadius: 2,
+                      ),
+                    ]
+                  : [],
+            ),
+            child: Icon(
+              place['image_icon'] as IconData,
+              color: isSelected ? Colors.white : profile.accentColor,
+              size: isSelected ? 24 : 18,
+            ),
+          ),
+        ),
+      );
+    }).toList();
+
+    // Add "my location" marker (blue pulsing dot)
+    final myLocationMarker = Marker(
+      width: 28,
+      height: 28,
+      point: _currentLocation,
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.blue,
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white, width: 3),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.blue.withValues(alpha: 0.45),
+              blurRadius: 12,
+              spreadRadius: 4,
+            ),
+          ],
+        ),
+      ),
+    );
+
     return Stack(
       children: [
         FlutterMap(
           mapController: _mapController,
           options: MapOptions(
             initialCenter: _currentLocation,
-            initialZoom: 12.0,
+            initialZoom: 13.0,
             interactionOptions: const InteractionOptions(flags: InteractiveFlag.all),
           ),
           children: [
             TileLayer(
-              urlTemplate: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png',
-              subdomains: const ['a', 'b', 'c', 'd'],
+              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
               userAgentPackageName: 'com.neurospace.app',
               maxZoom: 19,
             ),
             MarkerLayer(
-              markers: places.asMap().entries.map((entry) {
-                final index = entry.key;
-                final place = entry.value;
-                final isSelected = index == _selectedIndex;
-
-                return Marker(
-                  width: isSelected ? 48 : 36,
-                  height: isSelected ? 48 : 36,
-                  point: place['location'] as LatLng,
-                  child: GestureDetector(
-                    onTap: () => _onCardChanged(index),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 300),
-                      decoration: BoxDecoration(
-                        color: isSelected ? profile.accentColor : profile.cardColor,
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: isSelected ? Colors.white : profile.accentColor.withValues(alpha: 0.45),
-                          width: isSelected ? 3 : 1.5,
-                        ),
-                        boxShadow: isSelected
-                            ? [
-                                BoxShadow(
-                                  color: profile.accentColor.withValues(alpha: 0.5),
-                                  blurRadius: 12,
-                                  spreadRadius: 2,
-                                ),
-                              ]
-                            : [],
-                      ),
-                      child: Icon(
-                        place['image_icon'] as IconData,
-                        color: isSelected ? Colors.white : profile.accentColor,
-                        size: isSelected ? 24 : 18,
-                      ),
-                    ),
-                  ),
-                );
-              }).toList(),
+              markers: [myLocationMarker, ...placeMarkers],
             ),
           ],
         ),
+        // Location error banner
+        if (_locationError != null)
+          Positioned(
+            top: 8,
+            left: 16,
+            right: 16,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.orange.shade800,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Using approximate location • $_locationError',
+                      style: const TextStyle(color: Colors.white, fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        // Re-center button
+        Positioned(
+          top: _locationError != null ? 56 : 12,
+          right: 16,
+          child: GestureDetector(
+            onTap: _recenterOnMe,
+            child: Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: profile.cardColor,
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.3),
+                    blurRadius: 8,
+                  ),
+                ],
+              ),
+              child: Icon(Icons.my_location_rounded, color: profile.accentColor, size: 22),
+            ),
+          ),
+        ),
+        // Place cards
         Positioned(
           bottom: 24,
           left: 0,
