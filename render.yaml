@@ -1,0 +1,41 @@
+# NeuroSpace — Render Blueprint
+# ==============================
+# Defines the backend web service for one-click deployment.
+# Docs: https://docs.render.com/blueprint-spec
+
+services:
+  - type: web
+    name: neurospace-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    region: oregon
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: GEMINI_FLASH_MODEL
+        value: gemini-2.5-flash
+      - key: GEMINI_PRO_MODEL
+        value: gemini-2.5-pro
+      - key: GROQ_TEXT_MODELS
+        value: llama-3.3-70b-versatile,llama-3.1-8b-instant,mixtral-8x7b-32768
+      - key: GROQ_VISION_MODELS
+        value: llama-3.2-90b-vision-preview,llama-3.2-11b-vision-preview
+      - key: GROQ_AUDIO_MODELS
+        value: whisper-large-v3,whisper-large-v3-turbo
+      - key: DEBUG
+        value: "false"
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        value: "8000"
