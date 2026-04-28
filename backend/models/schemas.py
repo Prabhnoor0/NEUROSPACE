@@ -190,15 +190,15 @@ class SimplifyResponse(BaseModel):
 
 
 class SummaryResponse(BaseModel):
-    title: str
-    summary: str
-    key_points: List[str]
-    highlights: List[str]
-    tone: str
-    confidence: float
-    reading_time: str
-    action_hint: str
-    source_type: str
+    title: str = "Summary"
+    summary: str = ""
+    key_points: List[str] = Field(default_factory=list)
+    highlights: List[str] = Field(default_factory=list)
+    tone: str = "Neutral"
+    confidence: float = 0.8
+    reading_time: str = "1 min read"
+    action_hint: str = "Quick overview"
+    source_type: str = "page"
 
 
 class HealthResponse(BaseModel):

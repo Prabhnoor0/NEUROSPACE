@@ -78,10 +78,20 @@ async def summarize_text(request: SimplifyRequest):
         )
         return SummaryResponse(**summary_data)
     except Exception as e:
-        logger.error(f"Text summarization failed: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to summarize text: {str(e)}"
+        logger.error(f"Text summarization failed: {e}", exc_info=True)
+        # Return a graceful fallback instead of crashing with 500
+        cleaned = " ".join(request.text.split())
+        preview = cleaned[:200] + ("..." if len(cleaned) > 200 else "")
+        return SummaryResponse(
+            title="Summary",
+            summary=preview or "Could not generate summary. Please try again.",
+            key_points=["AI models are temporarily busy"],
+            highlights=[],
+            tone="Neutral",
+            confidence=0.5,
+            reading_time="1 min read",
+            action_hint="Try again for a richer summary",
+            source_type="page",
         )
 
 

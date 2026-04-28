@@ -340,30 +340,70 @@ Return ONLY a valid JSON object matching this schema exactly. Do not use markdow
 """
 
     # Attempt 1: Gemini
-    summary_data = invoke_gemini_json(
-        prompt=summarize_prompt,
-        task_name="text_summarization",
-        temperature=0.3,
-    )
-    if summary_data and "summary" in summary_data:
-        return summary_data
+    try:
+        summary_data = invoke_gemini_json(
+            prompt=summarize_prompt,
+            task_name="text_summarization",
+            temperature=0.3,
+        )
+        if summary_data and "summary" in summary_data:
+            return _normalize_summary(summary_data, text, source_type)
+    except Exception as e:
+        logger.warning(f"Gemini summarize error: {e}")
 
     # Attempt 2: Groq fallback
     logger.warning("Gemini summarize failed. Trying Groq fallback...")
-    groq_messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": summarize_prompt},
-    ]
-    groq_data = invoke_groq_json(
-        messages=groq_messages,
-        task_name="text_summarization_groq",
-        temperature=0.3,
-    )
-    if groq_data and "summary" in groq_data:
-        return groq_data
+    try:
+        groq_messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": summarize_prompt},
+        ]
+        groq_data = invoke_groq_json(
+            messages=groq_messages,
+            task_name="text_summarization_groq",
+            temperature=0.3,
+        )
+        if groq_data and "summary" in groq_data:
+            return _normalize_summary(groq_data, text, source_type)
+    except Exception as e:
+        logger.warning(f"Groq summarize error: {e}")
 
     logger.error("All summarize model attempts failed. Returning local fallback.")
     return _fallback_summary(text, source_type)
+
+
+def _normalize_summary(data: dict, original_text: str, source_type: str) -> dict:
+    """Ensure all required SummaryResponse fields are present with sensible defaults.
+    AI models sometimes return partial JSON; this prevents Pydantic validation errors."""
+    cleaned = " ".join(original_text.split())
+    preview = cleaned[:200] + ("..." if len(cleaned) > 200 else "")
+
+    # Estimate reading time from word count
+    word_count = len(cleaned.split())
+    read_mins = max(1, round(word_count / 200))
+
+    data.setdefault("title", "Summary")
+    data.setdefault("summary", preview)
+    data.setdefault("key_points", [])
+    data.setdefault("highlights", [])
+    data.setdefault("tone", "Informative")
+    data.setdefault("confidence", 0.8)
+    data.setdefault("reading_time", f"{read_mins} min read")
+    data.setdefault("action_hint", "Quick overview")
+    data.setdefault("source_type", source_type)
+
+    # Ensure correct types for fields AI might return incorrectly
+    if not isinstance(data["key_points"], list):
+        data["key_points"] = [str(data["key_points"])]
+    if not isinstance(data["highlights"], list):
+        data["highlights"] = [str(data["highlights"])] if data["highlights"] else []
+    if not isinstance(data["confidence"], (int, float)):
+        try:
+            data["confidence"] = float(data["confidence"])
+        except (ValueError, TypeError):
+            data["confidence"] = 0.8
+
+    return data
 
 
 def _fallback_summary(text: str, source_type: str) -> dict:
