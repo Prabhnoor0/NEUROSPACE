@@ -6,8 +6,7 @@ import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
-import 'package:audioplayers/audioplayers.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 
 /// The three visual states the overlay can be in.
 enum _OverlayState { bubble, actionMenu, result }
@@ -39,9 +38,10 @@ class _OverlayScreenState extends State<OverlayScreen> {
   Map<String, dynamic>? _summaryData;
   String _contentSource = '';
 
-  // ── Audio ────────────────────────────────────────────
-  final AudioPlayer _audioPlayer = AudioPlayer();
+  // ── Audio (Flutter TTS) ──────────────────────────────
+  final FlutterTts _flutterTts = FlutterTts();
   bool _isPlaying = false;
+  double _ttsProgress = 0.0;
 
   // ── Backend URL ──────────────────────────────────────
   List<String> get _baseUrls {
@@ -91,6 +91,7 @@ class _OverlayScreenState extends State<OverlayScreen> {
   @override
   void initState() {
     super.initState();
+    _initTts();
 
     // Listen for messages from the main app
     try {
@@ -104,9 +105,53 @@ class _OverlayScreenState extends State<OverlayScreen> {
     }
   }
 
+  Future<void> _initTts() async {
+    await _flutterTts.setLanguage('en-US');
+    await _flutterTts.setSpeechRate(0.45);
+    await _flutterTts.setVolume(1.0);
+    await _flutterTts.setPitch(1.0);
+
+    _flutterTts.setStartHandler(() {
+      if (mounted) setState(() => _isPlaying = true);
+    });
+    _flutterTts.setCompletionHandler(() {
+      if (mounted) setState(() { _isPlaying = false; _ttsProgress = 0.0; });
+    });
+    _flutterTts.setCancelHandler(() {
+      if (mounted) setState(() { _isPlaying = false; _ttsProgress = 0.0; });
+    });
+    _flutterTts.setErrorHandler((msg) {
+      debugPrint('[NeuroSpace] TTS error: $msg');
+      if (mounted) setState(() { _isPlaying = false; _ttsProgress = 0.0; });
+    });
+    _flutterTts.setProgressHandler((text, start, end, word) {
+      if (mounted && text.isNotEmpty) {
+        setState(() => _ttsProgress = end / text.length);
+      }
+    });
+  }
+
+  /// Safely speak text, truncating to Android's max TTS input length.
+  Future<void> _safeTtsSpeak(String text) async {
+    const maxLen = 3900; // Android limit is ~4000; leave margin
+    String toSpeak = text;
+    if (toSpeak.length > maxLen) {
+      // Try to cut at the last sentence boundary before the limit
+      final truncated = toSpeak.substring(0, maxLen);
+      final lastPeriod = truncated.lastIndexOf('.');
+      if (lastPeriod > maxLen ~/ 2) {
+        toSpeak = truncated.substring(0, lastPeriod + 1);
+      } else {
+        toSpeak = '$truncated...';
+      }
+      debugPrint('[NeuroSpace] TTS text truncated from ${text.length} to ${toSpeak.length} chars');
+    }
+    await _flutterTts.speak(toSpeak);
+  }
+
   @override
   void dispose() {
-    _audioPlayer.dispose();
+    _flutterTts.stop();
     super.dispose();
   }
 
@@ -126,7 +171,7 @@ class _OverlayScreenState extends State<OverlayScreen> {
   }
 
   Future<void> _collapseToBubble() async {
-    _audioPlayer.stop();
+    _flutterTts.stop();
     setState(() {
       _state = _OverlayState.bubble;
       _activeAction = _ActionType.none;
@@ -135,6 +180,7 @@ class _OverlayScreenState extends State<OverlayScreen> {
       _clipboardText = '';
       _summaryData = null;
       _isPlaying = false;
+      _ttsProgress = 0.0;
     });
     try {
       await FlutterOverlayWindow.resizeOverlay(80, 80, false);
@@ -608,6 +654,65 @@ class _OverlayScreenState extends State<OverlayScreen> {
       return;
     }
 
+    setState(() {
+      _clipboardText = text;
+      _contentSource = source;
+      _isLoading = true;
+    });
+    _expandToResult();
+
+    // Call backend AI easy-read endpoint
+    try {
+      final response = await _postToBackend('/api/assistant/easy-read', {
+        'text': text,
+        'user_profile': 'ADHD',
+      });
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final formatted = data['formatted_text'] as String? ?? '';
+        final sections = data['sections'] as List? ?? [];
+        final readTime = data['estimated_read_time'] as String? ?? '';
+
+        if (formatted.isNotEmpty) {
+          setState(() {
+            _resultText = formatted;
+            _isLoading = false;
+          });
+        } else if (sections.isNotEmpty) {
+          // Build from sections
+          final buffer = StringBuffer();
+          for (final sec in sections) {
+            final heading = sec['heading'] ?? '';
+            final bullets = (sec['bullets'] as List?) ?? [];
+            if (heading.isNotEmpty) {
+              buffer.writeln(heading);
+            }
+            for (final b in bullets) {
+              buffer.writeln('  • $b');
+            }
+            buffer.writeln();
+          }
+          setState(() {
+            _resultText = buffer.toString().trim();
+            _isLoading = false;
+          });
+        } else {
+          // Fallback to local formatting
+          _localEasyRead(text);
+        }
+      } else {
+        debugPrint('[NeuroSpace] EasyRead backend error: ${response.statusCode}');
+        _localEasyRead(text);
+      }
+    } catch (e) {
+      debugPrint('[NeuroSpace] EasyRead backend unreachable: $e');
+      _localEasyRead(text);
+    }
+  }
+
+  /// Local fallback for Easy Read when backend is unavailable.
+  void _localEasyRead(String text) {
     final normalized = text.replaceAll(RegExp(r'\s+'), ' ').trim();
     final sentences = normalized
         .split(RegExp(r'(?<=[.!?])\s+'))
@@ -615,25 +720,25 @@ class _OverlayScreenState extends State<OverlayScreen> {
         .toList();
 
     final buffer = StringBuffer();
+    buffer.writeln('📌 Easy Read Version');
+    buffer.writeln();
     for (final sentence in sentences) {
       if (sentence.length > 90) {
         for (final part in sentence.split(RegExp(r',\s*'))) {
           if (part.trim().isNotEmpty) {
-            buffer.writeln('• ${part.trim()}');
+            buffer.writeln('  • ${part.trim()}');
           }
         }
       } else {
-        buffer.writeln('• ${sentence.trim()}');
+        buffer.writeln('  • ${sentence.trim()}');
       }
       buffer.writeln();
     }
 
     setState(() {
-      _activeAction = _ActionType.easyRead;
       _resultText = buffer.toString().trim();
       _isLoading = false;
     });
-    _expandToResult();
   }
 
   // ══════════════════════════════════════════════════════
@@ -667,42 +772,18 @@ class _OverlayScreenState extends State<OverlayScreen> {
       _activeAction = _ActionType.tts;
       _clipboardText = text;
       _contentSource = source;
-      _isLoading = true;
+      _resultText = text;
+      _isLoading = false;
     });
     _expandToResult();
 
+    // Use Flutter TTS — works offline, no backend needed
     try {
-      final response = await _postToBackend('/api/text-to-speech', {
-        'text': text,
-        'speed': 1.0,
-      });
-
-      if (response.statusCode == 200) {
-        final dir = await getTemporaryDirectory();
-        final file = File('${dir.path}/neuro_tts.mp3');
-        await file.writeAsBytes(response.bodyBytes);
-
-        await _audioPlayer.play(DeviceFileSource(file.path));
-        setState(() {
-          _isPlaying = true;
-          _resultText = text;
-          _isLoading = false;
-        });
-
-        _audioPlayer.onPlayerComplete.listen((_) {
-          if (mounted) setState(() => _isPlaying = false);
-        });
-      } else {
-        setState(() {
-          _resultText = '⚠️ TTS failed (${response.statusCode}). Try again.';
-          _isLoading = false;
-        });
-      }
+      await _safeTtsSpeak(text);
     } catch (e) {
+      debugPrint('[NeuroSpace] Flutter TTS error: $e');
       setState(() {
-        _resultText =
-            '⚠️ Could not reach backend for TTS.\nMake sure it\'s running on ${_baseUrls.join(' or ')}';
-        _isLoading = false;
+        _resultText = '⚠️ Text-to-Speech failed: $e';
       });
     }
   }
@@ -1089,73 +1170,89 @@ class _OverlayScreenState extends State<OverlayScreen> {
                   width: 1,
                 ),
               ),
-              child: Row(
+              child: Column(
                 children: [
-                  GestureDetector(
-                    onTap: () async {
-                      if (_isPlaying) {
-                        await _audioPlayer.pause();
-                        setState(() => _isPlaying = false);
-                      } else {
-                        await _audioPlayer.resume();
-                        setState(() => _isPlaying = true);
-                      }
-                    },
-                    child: Container(
-                      width: 48,
-                      height: 48,
-                      decoration: const BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: LinearGradient(
-                          colors: [_cyan, Color(0xFF0097A7)],
-                        ),
-                      ),
-                      child: Icon(
-                        _isPlaying
-                            ? Icons.pause_rounded
-                            : Icons.play_arrow_rounded,
-                        color: Colors.white,
-                        size: 28,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Now Playing',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
+                  Row(
+                    children: [
+                      GestureDetector(
+                        onTap: () async {
+                          if (_isPlaying) {
+                            await _flutterTts.stop();
+                            setState(() { _isPlaying = false; _ttsProgress = 0.0; });
+                          } else {
+                            setState(() => _isPlaying = true);
+                            await _safeTtsSpeak(_clipboardText);
+                          }
+                        },
+                        child: Container(
+                          width: 48,
+                          height: 48,
+                          decoration: const BoxDecoration(
+                            shape: BoxShape.circle,
+                            gradient: LinearGradient(
+                              colors: [_cyan, Color(0xFF0097A7)],
+                            ),
+                          ),
+                          child: Icon(
+                            _isPlaying
+                                ? Icons.pause_rounded
+                                : Icons.play_arrow_rounded,
                             color: Colors.white,
+                            size: 28,
                           ),
                         ),
-                        const SizedBox(height: 2),
-                        Text(
-                          '${_clipboardText.split(' ').take(8).join(' ')}...',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.white.withValues(alpha: 0.4),
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _isPlaying ? 'Now Playing' : 'Ready to Play',
+                              style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.white,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              '${_clipboardText.split(' ').take(8).join(' ')}...',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.white.withValues(alpha: 0.4),
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
+                      ),
+                      GestureDetector(
+                        onTap: () async {
+                          await _flutterTts.stop();
+                          setState(() { _isPlaying = false; _ttsProgress = 0.0; });
+                        },
+                        child: Icon(
+                          Icons.stop_rounded,
+                          color: Colors.white.withValues(alpha: 0.5),
+                          size: 28,
+                        ),
+                      ),
+                    ],
                   ),
-                  GestureDetector(
-                    onTap: () async {
-                      await _audioPlayer.stop();
-                      setState(() => _isPlaying = false);
-                    },
-                    child: Icon(
-                      Icons.stop_rounded,
-                      color: Colors.white.withValues(alpha: 0.5),
-                      size: 28,
+                  if (_isPlaying) ...[
+                    const SizedBox(height: 10),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(4),
+                      child: LinearProgressIndicator(
+                        value: _ttsProgress,
+                        backgroundColor: Colors.white.withValues(alpha: 0.1),
+                        valueColor: const AlwaysStoppedAnimation<Color>(_cyan),
+                        minHeight: 3,
+                      ),
                     ),
-                  ),
+                  ],
                 ],
               ),
             ),
@@ -1233,30 +1330,15 @@ class _OverlayScreenState extends State<OverlayScreen> {
                   Icons.volume_up_rounded,
                   'Read Aloud',
                   () async {
-                    setState(() {
-                      _activeAction = _ActionType.tts;
-                      _clipboardText = _summaryData!['summary'] ?? '';
-                      _isLoading = true;
-                    });
-                    try {
-                      final response = await _postToBackend(
-                        '/api/text-to-speech',
-                        {'text': _clipboardText, 'speed': 1.0},
-                      );
-                      if (response.statusCode == 200) {
-                        final dir = await getTemporaryDirectory();
-                        final file = File('${dir.path}/neuro_tts.mp3');
-                        await file.writeAsBytes(response.bodyBytes);
-                        await _audioPlayer.play(DeviceFileSource(file.path));
-                        setState(() {
-                          _isPlaying = true;
-                          _isLoading = false;
-                        });
-                        _audioPlayer.onPlayerComplete.listen((_) {
-                          if (mounted) setState(() => _isPlaying = false);
-                        });
-                      }
-                    } catch (_) {}
+                    final summaryText = _summaryData!['summary'] ?? '';
+                    if (summaryText.toString().isNotEmpty) {
+                      setState(() {
+                        _activeAction = _ActionType.tts;
+                        _clipboardText = summaryText;
+                        _resultText = summaryText;
+                      });
+                      await _safeTtsSpeak(summaryText);
+                    }
                   },
                   accentColor,
                 ),
@@ -1287,13 +1369,14 @@ class _OverlayScreenState extends State<OverlayScreen> {
               Expanded(
                 child: GestureDetector(
                   onTap: () {
-                    _audioPlayer.stop();
+                    _flutterTts.stop();
                     setState(() {
                       _state = _OverlayState.actionMenu;
                       _activeAction = _ActionType.none;
                       _isLoading = false;
                       _resultText = '';
                       _isPlaying = false;
+                      _ttsProgress = 0.0;
                       _contentSource = '';
                       _summaryData = null;
                     });

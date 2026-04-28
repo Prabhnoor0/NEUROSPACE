@@ -425,6 +425,148 @@ def _fallback_summary(text: str, source_type: str) -> dict:
 
 
 # ============================================
+# Easy Read (AI-powered accessible formatting)
+# ============================================
+
+async def easy_read_text(text: str, profile: str) -> dict:
+    """
+    Reformat text into a highly accessible 'Easy Read' format.
+    Uses AI to create clear sections, bullet points, bold keywords,
+    and simplified language tuned per neuro-profile.
+
+    Returns:
+        Dict with formatted_text, sections, word_count, reading_level, estimated_read_time
+    """
+    prompt_config = PROFILE_PROMPTS.get(profile, PROFILE_PROMPTS["ADHD"])
+    system_prompt = prompt_config["system"]
+
+    easy_read_prompt = f"""{system_prompt}
+
+The user needs the following text reformatted for EASY READING.
+Your goal is to make it maximally accessible for neurodivergent readers.
+
+Rules:
+1. Break the text into clear SHORT sections with descriptive headings
+2. Use simple bullet points (not nested)
+3. Bold the most important keywords by wrapping them in **double asterisks**
+4. Use very short sentences (max 15 words each)
+5. Replace jargon with everyday words
+6. Add emoji icons before each section heading for visual anchoring
+7. Each bullet should be ONE simple idea
+
+TEXT TO REFORMAT:
+\"\"\"
+{text}
+\"\"\"
+
+Return ONLY valid JSON matching this schema exactly:
+{{
+  "formatted_text": "The full easy-read text as a single string with newlines. Use '📌 Heading' for sections and '  • bullet' for points.",
+  "sections": [
+    {{
+      "heading": "Section Title with Emoji",
+      "bullets": ["Simple point 1", "Simple point 2"]
+    }}
+  ],
+  "word_count": 123,
+  "reading_level": "simplified",
+  "estimated_read_time": "2 min read"
+}}
+"""
+
+    # Attempt 1: Gemini
+    try:
+        data = invoke_gemini_json(
+            prompt=easy_read_prompt,
+            task_name="easy_read_formatting",
+            temperature=0.3,
+        )
+        if data and "formatted_text" in data:
+            data.setdefault("sections", [])
+            data.setdefault("word_count", len(text.split()))
+            data.setdefault("reading_level", "simplified")
+            data.setdefault("estimated_read_time", f"{max(1, len(text.split()) // 150)} min read")
+            return data
+    except Exception as e:
+        logger.warning(f"Gemini easy-read failed: {e}")
+
+    # Attempt 2: Groq fallback
+    logger.warning("Gemini easy-read failed. Trying Groq fallback...")
+    try:
+        groq_messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": easy_read_prompt},
+        ]
+        groq_data = invoke_groq_json(
+            messages=groq_messages,
+            task_name="easy_read_formatting_groq",
+            temperature=0.3,
+        )
+        if groq_data and "formatted_text" in groq_data:
+            groq_data.setdefault("sections", [])
+            groq_data.setdefault("word_count", len(text.split()))
+            groq_data.setdefault("reading_level", "simplified")
+            groq_data.setdefault("estimated_read_time", f"{max(1, len(text.split()) // 150)} min read")
+            return groq_data
+    except Exception as e:
+        logger.warning(f"Groq easy-read failed: {e}")
+
+    # Fallback: basic local formatting
+    logger.error("All easy-read model attempts failed. Returning local fallback.")
+    return _fallback_easy_read(text)
+
+
+def _fallback_easy_read(text: str) -> dict:
+    """Basic local easy-read formatting when AI is unavailable."""
+    import re
+    cleaned = " ".join(text.split())
+    sentences = re.split(r'(?<=[.!?])\s+', cleaned)
+    sentences = [s.strip() for s in sentences if s.strip()]
+
+    sections = []
+    current_bullets = []
+
+    for s in sentences:
+        if len(s) > 100:
+            parts = [p.strip() for p in s.split(",") if p.strip()]
+            current_bullets.extend(parts)
+        else:
+            current_bullets.append(s)
+
+        if len(current_bullets) >= 4:
+            sections.append({
+                "heading": f"📌 Section {len(sections) + 1}",
+                "bullets": current_bullets[:],
+            })
+            current_bullets = []
+
+    if current_bullets:
+        sections.append({
+            "heading": f"📌 Section {len(sections) + 1}",
+            "bullets": current_bullets,
+        })
+
+    if not sections:
+        sections = [{"heading": "📌 Content", "bullets": [cleaned[:300] or "No content."]}]
+
+    formatted_parts = []
+    for sec in sections:
+        formatted_parts.append(sec["heading"])
+        for b in sec["bullets"]:
+            formatted_parts.append(f"  • {b}")
+        formatted_parts.append("")
+
+    word_count = len(cleaned.split())
+    return {
+        "formatted_text": "\n".join(formatted_parts).strip(),
+        "sections": sections,
+        "word_count": word_count,
+        "reading_level": "simplified",
+        "estimated_read_time": f"{max(1, word_count // 150)} min read",
+    }
+
+
+# ============================================
 # Image Analysis (Gemini Vision)
 # ============================================
 

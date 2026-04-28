@@ -201,6 +201,19 @@ class SummaryResponse(BaseModel):
     source_type: str = "page"
 
 
+class EasyReadRequest(BaseModel):
+    text: str = Field(..., description="Text to reformat for easy reading", min_length=1)
+    user_profile: NeuroProfileType = Field(..., description="The user's neuro-profile type")
+
+
+class EasyReadResponse(BaseModel):
+    formatted_text: str = ""
+    sections: List[dict] = Field(default_factory=list)
+    word_count: int = 0
+    reading_level: str = "simplified"
+    estimated_read_time: str = "1 min read"
+
+
 class HealthResponse(BaseModel):
     status: str = "ok"
     version: str = "1.0.0"

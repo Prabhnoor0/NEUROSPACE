@@ -336,7 +336,7 @@ class BubbleProvider extends ChangeNotifier {
 
     _currentAction = BubbleAction.easyRead;
     _clipboardText = payload.text;
-    final result = _actionEngine.easyRead(payload);
+    final result = await _actionEngine.easyRead(payload);
     _resultText = result.primaryText;
     _state = BubbleState.result;
     notifyListeners();
