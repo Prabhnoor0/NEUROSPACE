@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import '../models/neuro_profile.dart';
 import '../models/resource_models.dart';
 import '../providers/neuro_theme_provider.dart';
+import '../providers/booking_provider.dart';
 import '../services/firebase_service.dart';
 import '../services/resource_service.dart';
 
@@ -749,9 +750,12 @@ class _ResourceCard extends StatelessWidget {
                               final timeStr =
                                   '${selectedTime.hour.toString().padLeft(2, '0')}:${selectedTime.minute.toString().padLeft(2, '0')}';
 
+                              final bp = Provider.of<BookingProvider>(
+                                  context,
+                                  listen: false);
+
                               final booking =
-                                  await ResourceService.createBooking(
-                                userId: userId,
+                                  await bp.createBooking(
                                 resourceId: resource.id,
                                 resourceName: resource.name,
                                 resourceType: resource.type,
@@ -762,6 +766,7 @@ class _ResourceCard extends StatelessWidget {
                                 notes: notesController.text.isNotEmpty
                                     ? notesController.text
                                     : null,
+                                providerName: resource.name,
                               );
 
                               if (!context.mounted) return;

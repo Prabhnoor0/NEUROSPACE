@@ -7,6 +7,7 @@ import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'firebase_options.dart';
 import 'providers/neuro_theme_provider.dart';
 import 'providers/bubble_provider.dart';
+import 'providers/booking_provider.dart';
 import 'screens/splash_screen.dart';
 import 'screens/overlay_screen.dart';
 import 'screens/reader_screen.dart';
@@ -66,6 +67,9 @@ class NeuroSpaceApp extends StatelessWidget {
         ),
         ChangeNotifierProvider(
           create: (_) => BubbleProvider(),
+        ),
+        ChangeNotifierProvider(
+          create: (_) => BookingProvider(),
         ),
       ],
       child: Consumer<NeuroThemeProvider>(

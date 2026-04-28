@@ -1,6 +1,7 @@
-/// NeuroSpace — Resource Allocation Service
-/// HTTP client for recommendation, booking, NGO, and help request APIs.
-/// Also handles Firebase persistence for bookings and help requests.
+/// NeuroSpace — Resource Service (Full Lifecycle)
+/// HTTP client for recommendations, booking CRUD, status transitions,
+/// summaries, notes, dashboard stats, NGOs, and help requests.
+/// Also handles Firebase persistence.
 
 import 'package:flutter/foundation.dart';
 import 'dart:convert';
@@ -10,11 +11,12 @@ import 'firebase_service.dart';
 import '../models/resource_models.dart';
 
 class ResourceService {
+  static const _timeout = Duration(seconds: 20);
+
   // =============================================
   // Recommendations
   // =============================================
 
-  /// Get AI-scored resource recommendations
   static Future<List<RecommendedResource>> getRecommendations({
     String? diagnosis,
     String? difficultyLevel,
@@ -53,7 +55,7 @@ class ResourceService {
             headers: {'Content-Type': 'application/json'},
             body: json.encode(body),
           )
-          .timeout(const Duration(seconds: 20));
+          .timeout(_timeout);
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
@@ -71,10 +73,10 @@ class ResourceService {
   }
 
   // =============================================
-  // Booking
+  // Booking CRUD
   // =============================================
 
-  /// Create a booking via the backend API and persist to Firebase
+  /// Create a booking — returns full BookingData with timeline
   static Future<BookingData?> createBooking({
     required String userId,
     required String resourceId,
@@ -83,8 +85,12 @@ class ResourceService {
     required String category,
     required String date,
     required String time,
+    String mode = 'in_person',
     String? location,
     String? notes,
+    String? title,
+    String? description,
+    String? providerName,
   }) async {
     try {
       final body = {
@@ -95,8 +101,12 @@ class ResourceService {
         'category': category,
         'date': date,
         'time': time,
+        'mode': mode,
         'location': location,
         'notes': notes,
+        'title': title,
+        'description': description,
+        'provider_name': providerName,
       };
 
       final response = await http
@@ -105,7 +115,7 @@ class ResourceService {
             headers: {'Content-Type': 'application/json'},
             body: json.encode(body),
           )
-          .timeout(const Duration(seconds: 15));
+          .timeout(_timeout);
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
@@ -116,7 +126,7 @@ class ResourceService {
 
         return booking;
       }
-      debugPrint('Booking failed: ${response.statusCode}');
+      debugPrint('Booking failed: ${response.statusCode} ${response.body}');
       return null;
     } catch (e) {
       debugPrint('Booking error: $e');
@@ -124,13 +134,53 @@ class ResourceService {
     }
   }
 
-  /// Update a booking status
+  /// Get a single booking by ID (from backend)
+  static Future<BookingData?> getBookingById(String bookingId) async {
+    try {
+      final response = await http
+          .get(Uri.parse('${ApiService.baseUrl}/api/resources/booking/$bookingId'))
+          .timeout(_timeout);
+
+      if (response.statusCode == 200) {
+        return BookingData.fromJson(json.decode(response.body));
+      }
+      return null;
+    } catch (e) {
+      debugPrint('Get booking error: $e');
+      return null;
+    }
+  }
+
+  /// List all bookings for a user (from backend)
+  static Future<List<BookingData>> listBookings(String userId) async {
+    try {
+      final response = await http
+          .get(Uri.parse('${ApiService.baseUrl}/api/resources/bookings/$userId'))
+          .timeout(_timeout);
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final items = data['bookings'] as List<dynamic>? ?? [];
+        return items
+            .map((e) => BookingData.fromJson(e as Map<String, dynamic>))
+            .toList();
+      }
+      return [];
+    } catch (e) {
+      debugPrint('List bookings error: $e');
+      return [];
+    }
+  }
+
+  /// Update booking fields (status, date, time, notes, mode, location)
   static Future<BookingData?> updateBooking({
     required String bookingId,
     String? status,
     String? date,
     String? time,
     String? notes,
+    String? mode,
+    String? location,
   }) async {
     try {
       final body = <String, dynamic>{};
@@ -138,6 +188,8 @@ class ResourceService {
       if (date != null) body['date'] = date;
       if (time != null) body['time'] = time;
       if (notes != null) body['notes'] = notes;
+      if (mode != null) body['mode'] = mode;
+      if (location != null) body['location'] = location;
 
       final response = await http
           .patch(
@@ -145,11 +197,10 @@ class ResourceService {
             headers: {'Content-Type': 'application/json'},
             body: json.encode(body),
           )
-          .timeout(const Duration(seconds: 10));
+          .timeout(_timeout);
 
       if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        return BookingData.fromJson(data);
+        return BookingData.fromJson(json.decode(response.body));
       }
       return null;
     } catch (e) {
@@ -159,10 +210,197 @@ class ResourceService {
   }
 
   // =============================================
+  // Status Transition Shortcuts
+  // =============================================
+
+  static Future<BookingData?> confirmBooking(String bookingId) async {
+    try {
+      final response = await http
+          .post(Uri.parse(
+              '${ApiService.baseUrl}/api/resources/booking/$bookingId/confirm'))
+          .timeout(_timeout);
+      if (response.statusCode == 200) {
+        return BookingData.fromJson(json.decode(response.body));
+      }
+      return null;
+    } catch (e) {
+      debugPrint('Confirm error: $e');
+      return null;
+    }
+  }
+
+  static Future<BookingData?> startSession(String bookingId) async {
+    try {
+      final response = await http
+          .post(Uri.parse(
+              '${ApiService.baseUrl}/api/resources/booking/$bookingId/start'))
+          .timeout(_timeout);
+      if (response.statusCode == 200) {
+        return BookingData.fromJson(json.decode(response.body));
+      }
+      return null;
+    } catch (e) {
+      debugPrint('Start error: $e');
+      return null;
+    }
+  }
+
+  static Future<BookingData?> completeSession(String bookingId) async {
+    try {
+      final response = await http
+          .post(Uri.parse(
+              '${ApiService.baseUrl}/api/resources/booking/$bookingId/complete'))
+          .timeout(_timeout);
+      if (response.statusCode == 200) {
+        return BookingData.fromJson(json.decode(response.body));
+      }
+      return null;
+    } catch (e) {
+      debugPrint('Complete error: $e');
+      return null;
+    }
+  }
+
+  static Future<BookingData?> cancelBooking(String bookingId,
+      {String? reason}) async {
+    try {
+      final uri = Uri.parse(
+          '${ApiService.baseUrl}/api/resources/booking/$bookingId/cancel'
+          '${reason != null ? "?reason=${Uri.encodeComponent(reason)}" : ""}');
+      final response = await http.post(uri).timeout(_timeout);
+      if (response.statusCode == 200) {
+        return BookingData.fromJson(json.decode(response.body));
+      }
+      return null;
+    } catch (e) {
+      debugPrint('Cancel error: $e');
+      return null;
+    }
+  }
+
+  static Future<BookingData?> rescheduleBooking(
+    String bookingId, {
+    required String newDate,
+    required String newTime,
+    String? reason,
+  }) async {
+    try {
+      final body = {
+        'new_date': newDate,
+        'new_time': newTime,
+        if (reason != null) 'reason': reason,
+      };
+      final response = await http
+          .post(
+            Uri.parse(
+                '${ApiService.baseUrl}/api/resources/booking/$bookingId/reschedule'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode(body),
+          )
+          .timeout(_timeout);
+      if (response.statusCode == 200) {
+        return BookingData.fromJson(json.decode(response.body));
+      }
+      return null;
+    } catch (e) {
+      debugPrint('Reschedule error: $e');
+      return null;
+    }
+  }
+
+  // =============================================
+  // Summary & Notes
+  // =============================================
+
+  static Future<BookingData?> updateSummary(
+    String bookingId, {
+    String? title,
+    String? shortSummary,
+    String? fullSummary,
+    String? providerRemarks,
+    String? userFeedback,
+    String? nextSteps,
+    String? followUpDate,
+    String? sessionOutcome,
+  }) async {
+    try {
+      final body = <String, dynamic>{};
+      if (title != null) body['title'] = title;
+      if (shortSummary != null) body['short_summary'] = shortSummary;
+      if (fullSummary != null) body['full_summary'] = fullSummary;
+      if (providerRemarks != null) body['provider_remarks'] = providerRemarks;
+      if (userFeedback != null) body['user_feedback'] = userFeedback;
+      if (nextSteps != null) body['next_steps'] = nextSteps;
+      if (followUpDate != null) body['follow_up_date'] = followUpDate;
+      if (sessionOutcome != null) body['session_outcome'] = sessionOutcome;
+
+      final response = await http
+          .patch(
+            Uri.parse(
+                '${ApiService.baseUrl}/api/resources/booking/$bookingId/summary'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode(body),
+          )
+          .timeout(_timeout);
+      if (response.statusCode == 200) {
+        return BookingData.fromJson(json.decode(response.body));
+      }
+      return null;
+    } catch (e) {
+      debugPrint('Summary update error: $e');
+      return null;
+    }
+  }
+
+  static Future<BookingData?> addNote(
+    String bookingId, {
+    required String note,
+    String author = 'user',
+  }) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse(
+                '${ApiService.baseUrl}/api/resources/booking/$bookingId/note'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({'note': note, 'author': author}),
+          )
+          .timeout(_timeout);
+      if (response.statusCode == 200) {
+        return BookingData.fromJson(json.decode(response.body));
+      }
+      return null;
+    } catch (e) {
+      debugPrint('Add note error: $e');
+      return null;
+    }
+  }
+
+  // =============================================
+  // Dashboard Stats
+  // =============================================
+
+  static Future<DashboardStats> getDashboardStats(String userId) async {
+    try {
+      final response = await http
+          .get(Uri.parse(
+              '${ApiService.baseUrl}/api/resources/dashboard/$userId'))
+          .timeout(_timeout);
+
+      if (response.statusCode == 200) {
+        return DashboardStats.fromJson(json.decode(response.body));
+      }
+      return const DashboardStats();
+    } catch (e) {
+      debugPrint('Dashboard stats error: $e');
+      return const DashboardStats();
+    }
+  }
+
+  // =============================================
   // NGO Discovery
   // =============================================
 
-  /// Get nearby NGOs
   static Future<List<NGOData>> getNearbyNGOs({
     required double latitude,
     required double longitude,
@@ -174,7 +412,7 @@ class ResourceService {
             '${ApiService.baseUrl}/api/resources/ngos'
             '?lat=$latitude&lng=$longitude&radius_km=$radiusKm',
           ))
-          .timeout(const Duration(seconds: 15));
+          .timeout(_timeout);
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
@@ -183,7 +421,6 @@ class ResourceService {
             .map((e) => NGOData.fromJson(e as Map<String, dynamic>))
             .toList();
       }
-      debugPrint('NGO fetch failed: ${response.statusCode}');
       return [];
     } catch (e) {
       debugPrint('NGO fetch error: $e');
@@ -195,7 +432,6 @@ class ResourceService {
   // Help Requests
   // =============================================
 
-  /// Send a help request to an NGO
   static Future<HelpRequestData?> sendHelpRequest({
     required String userId,
     required String ngoId,
@@ -218,18 +454,14 @@ class ResourceService {
             headers: {'Content-Type': 'application/json'},
             body: json.encode(body),
           )
-          .timeout(const Duration(seconds: 15));
+          .timeout(_timeout);
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         final helpReq = HelpRequestData.fromJson(data);
-
-        // Persist to Firebase
         await _saveHelpRequestToFirebase(userId, helpReq);
-
         return helpReq;
       }
-      debugPrint('Help request failed: ${response.statusCode}');
       return null;
     } catch (e) {
       debugPrint('Help request error: $e');
@@ -269,30 +501,47 @@ class ResourceService {
     }
   }
 
-  /// Get all bookings from Firebase for a user
-  static Future<List<BookingData>> getBookingsFromFirebase(
+  /// Sync booking status to Firebase after a backend update
+  static Future<void> syncBookingToFirebase(
     String userId,
+    BookingData booking,
   ) async {
     try {
+      final fbBookings = await FirebaseService.getBookings(userId);
+      for (final fb in fbBookings) {
+        if (fb['booking_id'] == booking.bookingId) {
+          final key = fb['firebase_key'] as String?;
+          if (key != null) {
+            await FirebaseService.updateBookingStatus(
+              userId: userId,
+              firebaseKey: key,
+              status: booking.status,
+            );
+          }
+          break;
+        }
+      }
+    } catch (e) {
+      debugPrint('Firebase sync error: $e');
+    }
+  }
+
+  static Future<List<BookingData>> getBookingsFromFirebase(
+      String userId) async {
+    try {
       final bookings = await FirebaseService.getBookings(userId);
-      return bookings
-          .map((e) => BookingData.fromJson(e))
-          .toList();
+      return bookings.map((e) => BookingData.fromJson(e)).toList();
     } catch (e) {
       debugPrint('Firebase bookings fetch error: $e');
       return [];
     }
   }
 
-  /// Get all help requests from Firebase for a user
   static Future<List<HelpRequestData>> getHelpRequestsFromFirebase(
-    String userId,
-  ) async {
+      String userId) async {
     try {
       final requests = await FirebaseService.getHelpRequests(userId);
-      return requests
-          .map((e) => HelpRequestData.fromJson(e))
-          .toList();
+      return requests.map((e) => HelpRequestData.fromJson(e)).toList();
     } catch (e) {
       debugPrint('Firebase help requests fetch error: $e');
       return [];
