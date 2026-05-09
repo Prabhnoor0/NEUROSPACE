@@ -580,7 +580,7 @@ Please ensure new backend features include tests in `test_*.py` files and new Fl
 
 <div align="center">
 
-**Built with 🧠 for every kind of mind.**
+
 
 *NeuroSpace — because learning should meet you where your brain is, not where the curriculum expects it to be.*
 
